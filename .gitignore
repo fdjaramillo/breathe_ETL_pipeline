@@ -1,0 +1,25 @@
+# sistema
+.DS_Store
+
+# Python
+__pycache__/
+.venv/
+
+# R
+.Rhistory
+.RData
+.Ruserdata
+
+# Datos
+*.csv
+*.xlsx
+.env
+
+# vscode
+.vscode/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# sqlite
+*.db
