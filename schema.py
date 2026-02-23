@@ -10,13 +10,12 @@ def create_schema(db_path):
         # Habilitar soporte para Foreign Keys (SQLite lo tiene desactivado por defecto)
         cursor.execute("PRAGMA foreign_keys = ON;")
 
-        # 1. TABLA PATIENTS
+        # 1. TABLA PATIENTS (Anonimizada)
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS patients (
                 patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nhc TEXT UNIQUE NOT NULL,         -- Identificador único del hospital
-                name TEXT,                        -- Nombre completo (anonimizar si es necesario)
+                subject_id TEXT UNIQUE NOT NULL,  -- ID anonimizado del sujeto
                 birth_date TEXT,                  -- Formato ISO8601 (YYYY-MM-DD)
                 sex TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -93,7 +92,7 @@ def create_schema(db_path):
         )
 
         # Creación de índices para optimizar búsquedas futuras
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patient_nhc ON patients(nhc);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patient_subject_id ON patients(subject_id);")
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_report_date ON pdf_reports(report_date);"
         )

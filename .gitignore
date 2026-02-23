@@ -23,3 +23,6 @@ __pycache__/
 
 # sqlite
 *.db
+
+# Configuración local
+config.json

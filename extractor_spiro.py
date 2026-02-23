@@ -1,13 +1,6 @@
 import fitz
-import pathlib
 import re
 from datetime import datetime
-import hashlib
-
-
-def get_file_hash(filepath):
-    with open(filepath, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
 
 def normalize_headers(line):
@@ -213,9 +206,16 @@ def extract_measurements(text):
     return measurements_list
 
 
-def process_pdf(filepath):
+def process_pdf(filepath, file_hash):
     """
     Función orquestadora que devuelve el objeto compatible con loader.py
+    
+    Args:
+        filepath: Ruta del archivo PDF
+        file_hash: Hash SHA256 del archivo (calculado en main.py)
+        
+    Retorna:
+        Diccionario con los datos extraídos o None si falla.
     """
     try:
         doc = fitz.open(filepath)
@@ -229,7 +229,7 @@ def process_pdf(filepath):
         # Extraer información del archivo
         file_info = {
             "filename": filepath.name,
-            "file_hash": get_file_hash(filepath),
+            "file_hash": file_hash,
         }
 
         # Empaquetar todo en el formato esperado por loader.py

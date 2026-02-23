@@ -1,12 +1,5 @@
 import fitz  # PyMuPDF
-import hashlib
-import os
 from datetime import datetime
-
-
-def get_file_hash(filepath):
-    with open(filepath, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
 
 
 def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
@@ -177,10 +170,16 @@ def extract_measurements(doc):
     return measurements_list
 
 
-def process_pdf(filepath):
+def process_pdf(filepath, file_hash):
     """
     Procesa un solo archivo de principio a fin.
-    Retorna el objeto completo listo para la DB o None si falla.
+    
+    Args:
+        filepath: Ruta del archivo PDF
+        file_hash: Hash SHA256 del archivo (calculado en main.py)
+        
+    Retorna:
+        Diccionario con los datos extraídos o None si falla.
     """
     try:
         doc = fitz.open(filepath)
@@ -197,7 +196,7 @@ def process_pdf(filepath):
         # Paso 3: Información del archivo
         file_info = {
             "filename": filepath.name,
-            "file_hash": get_file_hash(filepath),
+            "file_hash": file_hash,
         }
 
         # Paso 4: Empaquetar todo en el formato esperado por loader.py

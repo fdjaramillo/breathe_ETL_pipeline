@@ -1,4 +1,7 @@
 import sqlite3
+import csv
+import hashlib
+import json
 from pathlib import Path
 
 import schema
@@ -6,13 +9,87 @@ import extractor_blood_test
 import extractor_spiro
 import loader
 
-# --- CONFIGURACIÓN ---
-BLOOD_TEST_DIR = Path("/Users/davidjaramillo/Downloads/breathe-project/haemogram")
-SPIROMETRY_DIR = Path("/Users/davidjaramillo/Downloads/spirometry")
-DB_PATH = "clinical_data.db"
+
+def get_file_hash(filepath):
+    """
+    Calcula el hash SHA256 de un archivo.
+    
+    Args:
+        filepath: Ruta del archivo
+        
+    Returns:
+        String con el hash SHA256 en hexadecimal
+    """
+    with open(filepath, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
-def is_file_processed(file_hash, db_path=DB_PATH):
+def load_config(config_path="config.json"):
+    """
+    Carga la configuración desde un archivo JSON.
+    Convierte todas las rutas a objetos Path para compatibilidad multiplataforma.
+    
+    Args:
+        config_path: Ruta del archivo de configuración
+        
+    Returns:
+        Diccionario con las claves de configuración o None si falla
+    """
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        # Convertir TODAS las rutas a objetos Path para compatibilidad multiplataforma
+        for key, value in config.items():
+            if isinstance(value, str):
+                # Solo convertir si parece una ruta (Unix o Windows)
+                config[key] = Path(value)
+
+        
+        print(f"[INFO] Configuración cargada desde {config_path}")
+        return config
+    except FileNotFoundError:
+        print(f"[ERROR] Archivo de configuración no encontrado: {config_path}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"[ERROR] Error al parsear JSON en {config_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Error inesperado al cargar configuración: {e}")
+        return None
+
+
+def load_nhc_mapping(csv_path):
+    """
+    Lee el archivo CSV de mapeo NHC -> ID y retorna un diccionario.
+    
+    Args:
+        csv_path: Ruta del archivo CSV
+        
+    Returns:
+        Diccionario {nhc: subject_id}
+    """
+    nhc_mapping = {}
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row and 'nhc' in row and 'id' in row:
+                    nhc = row['nhc'].strip()
+                    subject_id = row['id'].strip()
+                    nhc_mapping[nhc] = subject_id
+        
+        print(f"[INFO] Cargado mapeo NHC -> ID: {len(nhc_mapping)} registros desde {csv_path}")
+        return nhc_mapping
+    except FileNotFoundError:
+        print(f"[ERROR] Archivo de mapeo no encontrado: {csv_path}")
+        return {}
+    except Exception as e:
+        print(f"[ERROR] Error leyendo archivo de mapeo: {e}")
+        return {}
+
+
+def is_file_processed(file_hash, db_path):
     """
     Consulta la base de datos para ver si este hash ya existe.
     Retorna True si el archivo ya fue procesado anteriormente.
@@ -31,7 +108,7 @@ def is_file_processed(file_hash, db_path=DB_PATH):
         return False
 
 
-def process_directory(directory, extractor, report_type, db_path=DB_PATH):
+def process_directory(directory, extractor, report_type, nhc_mapping, db_path):
     """
     Procesa todos los PDFs de un directorio con el extractor especificado.
 
@@ -39,11 +116,14 @@ def process_directory(directory, extractor, report_type, db_path=DB_PATH):
         directory: Ruta del directorio con PDFs
         extractor: Módulo extractor (extractor_blood_test o extractor_spiro)
         report_type: Tipo de reporte ('blood_test' o 'spirometry')
+        nhc_mapping: Diccionario {nhc: subject_id} para anonimización
         db_path: Ruta de la base de datos
 
     Returns:
         Tupla (processed_count, skipped_count, error_count)
     """
+    directory = Path(directory)
+    
     if not directory.is_dir():
         print(f"[WARN] No existe el directorio: {directory}")
         return 0, 0, 0
@@ -68,7 +148,7 @@ def process_directory(directory, extractor, report_type, db_path=DB_PATH):
 
         try:
             # A. Calcular Hash para verificar idempotencia
-            current_hash = extractor.get_file_hash(filepath)
+            current_hash = get_file_hash(filepath)
 
             # B. Verificar si ya existe en DB
             if is_file_processed(current_hash, db_path):
@@ -78,7 +158,7 @@ def process_directory(directory, extractor, report_type, db_path=DB_PATH):
 
             # C. Extracción (Minería)
             print("   -> Extrayendo datos...")
-            data_object = extractor.process_pdf(filepath)
+            data_object = extractor.process_pdf(filepath, current_hash)
 
             # Depuracion opcional
             if report_type == "blood_test" and extractor == extractor_blood_test:
@@ -91,7 +171,7 @@ def process_directory(directory, extractor, report_type, db_path=DB_PATH):
 
             # D. Carga (Almacenamiento)
             print("   -> Guardando en base de datos...")
-            success = loader.save_to_db(data_object, db_path)
+            success = loader.save_to_db(data_object, nhc_mapping, db_path)
 
             if success:
                 print("   -> [OK] Procesamiento completado con éxito.")
@@ -111,49 +191,75 @@ def process_directory(directory, extractor, report_type, db_path=DB_PATH):
 
 def main():
     print("=" * 100)
-    # printar banner de bienvenida centrado
     print("INICIANDO PIPELINE DE EXTRACCIÓN CLÍNICA".center(100))
     print("=" * 100)
 
-    # 1. Asegurar que la estructura de la base de datos existe
-    print("\n[INIT] Verificando esquema de base de datos...")
-    schema.create_schema(DB_PATH)
+    # 1. Cargar configuración
+    print("\n[INIT] Cargando configuración...")
+    config = load_config()
+    if not config:
+        print("[ERROR] No se pudo cargar la configuración. Abortando...")
+        return
 
-    # 2. Contadores globales
+    # Extraer valores del diccionario de configuración
+    blood_test_dir = config.get("blood_test_dir")
+    spirometry_dir = config.get("spirometry_dir")
+    csv_mapping_path = config.get("csv_mapping_path")
+
+    # Nombre fijo de la base de datos (no viene del JSON)
+    db_path = "clinical_data.db"
+
+    # Validar que todas las claves estén presentes
+    if not all([blood_test_dir, spirometry_dir, csv_mapping_path]):
+        print("[ERROR] Configuración incompleta. Verifica config.json")
+        return
+
+    # 2. Cargar mapeo NHC -> ID
+    print("\n[INIT] Cargando mapeo de anonimización...")
+    nhc_mapping = load_nhc_mapping(csv_mapping_path)
+    if not nhc_mapping:
+        print("[ERROR] No se pudo cargar el mapeo de NHC. Abortando...")
+        return
+
+    # 3. Asegurar que la estructura de la base de datos existe
+    print("\n[INIT] Verificando esquema de base de datos...")
+    schema.create_schema(db_path)
+
+    # 4. Contadores globales
     total_processed = 0
     total_skipped = 0
     total_errors = 0
 
-    # 3. FASE 1: Procesar Análisis de Sangre (Blood Tests)
+    # 5. FASE 1: Procesar Análisis de Sangre (Blood Tests)
     print("\n" + "=" * 100)
     print("FASE 1: ANÁLISIS DE SANGRE")
     print("=" * 100)
     processed, skipped, errors = process_directory(
-        BLOOD_TEST_DIR, extractor_blood_test, "blood_test", DB_PATH
+        blood_test_dir, extractor_blood_test, "blood_test", nhc_mapping, db_path
     )
     total_processed += processed
     total_skipped += skipped
     total_errors += errors
 
-    # 4. FASE 2: Procesar Espirometrías (Spirometry)
+    # 6. FASE 2: Procesar Espirometrías (Spirometry)
     print("\n" + "=" * 100)
     print("FASE 2: ESPIROMETRÍA")
     print("=" * 100)
     processed, skipped, errors = process_directory(
-        SPIROMETRY_DIR, extractor_spiro, "spirometry", DB_PATH
+        spirometry_dir, extractor_spiro, "spirometry", nhc_mapping, db_path
     )
     total_processed += processed
     total_skipped += skipped
     total_errors += errors
 
-    # 5. Resumen Final
+    # 7. Resumen Final
     print("\n" + "=" * 100)
     print("RESUMEN DE EJECUCIÓN")
     print("=" * 100)
     print(f"Procesados (OK):  {total_processed}")
     print(f"Omitidos (Skip):  {total_skipped}")
     print(f"Errores:          {total_errors}")
-    print(f"Base de datos:    {DB_PATH}")
+    print(f"Base de datos:    {db_path}")
     print("=" * 100 + "\n")
 
 

@@ -1,10 +1,15 @@
 import sqlite3
 
 
-def save_to_db(data_object, db_path):
+def save_to_db(data_object, nhc_mapping, db_path):
     """
     Recibe el Diccionario Jerárquico del extractor e inserta los datos
     en SQLite usando una transacción atómica.
+
+    Args:
+        data_object: Diccionario con los datos extraídos
+        nhc_mapping: Diccionario {nhc: subject_id} para anonimización
+        db_path: Ruta de la base de datos
 
     Retorna: True si tuvo éxito, False si falló.
     """
@@ -23,27 +28,37 @@ def save_to_db(data_object, db_path):
         # Si algo falla dentro de este bloque, se hace rollback automático al final
         cursor.execute("BEGIN TRANSACTION;")
 
-        # 1. GESTIÓN DEL PACIENTE (Upsert Lógico)
+        # 1. GESTIÓN DEL PACIENTE (Anonimización Estricta)
         patient_data = data_object["patient"]
         nhc = patient_data.get("nhc")
 
-        # Verificar si el paciente ya existe
-        cursor.execute("SELECT patient_id FROM patients WHERE nhc = ?", (nhc,))
+        # Validar que el NHC existe en el mapeo
+        if nhc not in nhc_mapping:
+            print(
+                f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' no encontrado en el mapeo. "
+                f"Archivo: {data_object['file_info']['filename']}"
+            )
+            conn.rollback()
+            return False
+
+        subject_id = nhc_mapping[nhc]
+
+        # Verificar si el paciente ya existe usando subject_id
+        cursor.execute("SELECT patient_id FROM patients WHERE subject_id = ?", (subject_id,))
         result = cursor.fetchone()
 
         if result:
             # Paciente existe: Usamos su ID
             patient_id = result[0]
         else:
-            # Paciente nuevo: Insertamos
+            # Paciente nuevo: Insertamos (sin nhc ni name)
             cursor.execute(
                 """
-                INSERT INTO patients (nhc, name, birth_date, sex)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO patients (subject_id, birth_date, sex)
+                VALUES (?, ?, ?)
             """,
                 (
-                    patient_data.get("nhc"),
-                    patient_data.get("name"),
+                    subject_id,
                     patient_data.get("birth_date"),
                     patient_data.get("sex"),
                 ),
@@ -82,9 +97,6 @@ def save_to_db(data_object, db_path):
         report_id = cursor.lastrowid
 
         # 3. INSERCIÓN MASIVA DE MEDICIONES
-        measurements = data_object["measurements"]
-
-        # Preparamos los datos para executemany (es más eficiente)
         measurements = data_object["measurements"]
         report_type = report_data.get("report_type")
 
