@@ -91,8 +91,40 @@ def create_schema(db_path):
         """
         )
 
+        # 6. TABLA MACRO_FORMS (Bloques de MACRO)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS macro_forms (
+                form_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                visit TEXT,
+                form_name TEXT,
+                extraction_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
+            );
+            """
+        )
+
+        # 7. TABLA FORM_RESPONSES (Respuestas de formularios MACRO)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS form_responses (
+                response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                form_id INTEGER NOT NULL,
+                question_label TEXT,
+                repeat_instance INTEGER,
+                value TEXT,
+                status TEXT,
+                date_time TEXT,
+                FOREIGN KEY (form_id) REFERENCES macro_forms(form_id) ON DELETE CASCADE
+            );
+            """
+        )
+
         # Creación de índices para optimizar búsquedas futuras
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_patient_subject_id ON patients(subject_id);")
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_patient_subject_id ON patients(subject_id);"
+        )
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_report_date ON pdf_reports(report_date);"
         )
