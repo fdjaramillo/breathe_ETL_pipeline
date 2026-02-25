@@ -1,15 +1,39 @@
 import sqlite3
 
 
-def save_to_db(data_object, nhc_mapping, db_path):
+def mark_file_processed(file_hash, file_name, db_path):
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO processed_files (file_hash, file_name)
+            VALUES (?, ?)
+            """,
+            (file_hash, file_name),
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error as e:
+        if conn:
+            conn.rollback()
+        print(f"    [ERROR] No se pudo marcar archivo procesado: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def save_to_db(data_object, db_path, nhc_mapping=None):
     """
     Recibe el Diccionario Jerárquico del extractor e inserta los datos
     en SQLite usando una transacción atómica.
 
     Args:
         data_object: Diccionario con los datos extraídos
-        nhc_mapping: Diccionario {nhc: subject_id} para anonimización
         db_path: Ruta de la base de datos
+        nhc_mapping: Diccionario {nhc: subject_id} para anonimización
 
     Retorna: True si tuvo éxito, False si falló.
     """
@@ -28,23 +52,31 @@ def save_to_db(data_object, nhc_mapping, db_path):
         # Si algo falla dentro de este bloque, se hace rollback automático al final
         cursor.execute("BEGIN TRANSACTION;")
 
-        # 1. GESTIÓN DEL PACIENTE (Anonimización Estricta)
-        patient_data = data_object["patient"]
+        # --- Resolución de identidad ---
+        patient_data = data_object.get("patient", {}) or {}
         nhc = patient_data.get("nhc")
+        subject_id = None
 
-        # Validar que el NHC existe en el mapeo
-        if nhc not in nhc_mapping:
-            print(
-                f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' no encontrado en el mapeo. "
-                f"Archivo: {data_object['file_info']['filename']}"
-            )
+        if nhc:
+            if nhc not in nhc_mapping:
+                print(
+                    f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' no encontrado en el mapeo."
+                    f"Archivo: {data_object['file_info']['filename']}"
+                )
+                conn.rollback()
+                return False
+            subject_id = nhc_mapping[nhc]
+        elif data_object.get("subject_id"):
+            subject_id = data_object.get("subject_id")
+        else:
+            print("    [ERROR] No se encontró 'nhc' ni 'subject_id' en data_object.")
             conn.rollback()
             return False
 
-        subject_id = nhc_mapping[nhc]
-
-        # Verificar si el paciente ya existe usando subject_id
-        cursor.execute("SELECT patient_id FROM patients WHERE subject_id = ?", (subject_id,))
+        # --- Paciente ---
+        cursor.execute(
+            "SELECT patient_id FROM patients WHERE subject_id = ?", (subject_id,)
+        )
         result = cursor.fetchone()
 
         if result:
@@ -56,7 +88,7 @@ def save_to_db(data_object, nhc_mapping, db_path):
                 """
                 INSERT INTO patients (subject_id, birth_date, sex)
                 VALUES (?, ?, ?)
-            """,
+                """,
                 (
                     subject_id,
                     patient_data.get("birth_date"),
@@ -65,7 +97,43 @@ def save_to_db(data_object, nhc_mapping, db_path):
             )
             patient_id = cursor.lastrowid
 
-        # 2. INSERCIÓN DEL INFORME (LAB REPORT)
+        # --- Rama MACRO ---
+        if "macro_form" in data_object:
+            form = data_object.get("macro_form", {})
+            cursor.execute(
+                """
+                INSERT INTO macro_forms (patient_id, visit, form_name)
+                VALUES (?, ?, ?)
+                """,
+                (patient_id, form.get("visit"), form.get("form_name")),
+            )
+            form_id = cursor.lastrowid
+
+            responses = data_object.get("responses", []) or []
+            if responses:
+                cursor.executemany(
+                    """
+                    INSERT INTO form_responses (
+                        form_id, question_label, repeat_instance, value, status, date_time
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            form_id,
+                            r.get("question_label"),
+                            r.get("repeat_instance"),
+                            r.get("value"),
+                            r.get("status"),
+                            r.get("date_time"),
+                        )
+                        for r in responses
+                    ],
+                )
+
+            conn.commit()
+            return True
+
+        # --- Rama PDF ---
         report_data = data_object["report"]
         file_info = data_object["file_info"]
 
@@ -81,7 +149,7 @@ def save_to_db(data_object, nhc_mapping, db_path):
                 height_cm,
                 source_filename
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+            """,
             (
                 patient_id,
                 report_data.get("report_type"),
@@ -161,13 +229,12 @@ def save_to_db(data_object, nhc_mapping, db_path):
             """
             INSERT INTO processed_files (file_hash, file_name)
             VALUES (?, ?)
-        """,
+            """,
             (file_info.get("file_hash"), file_info.get("filename")),
         )
 
         # CONFIRMAR TRANSACCIÓN
         conn.commit()
-
         return True
 
     except sqlite3.IntegrityError as e:
