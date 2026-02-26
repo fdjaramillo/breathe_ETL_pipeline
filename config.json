@@ -1,0 +1,9 @@
+{
+    "blood_test_dir": "path/to/blood_pdfs",
+    "spirometry_dir": "path/to/spirometry_pdfs",
+    "csv_mapping_path": "path/to/nhc_mapping.csv",
+    "macro_dir": "macro_data",
+    "manual_entry_dir": "manual_entry_data",
+    "master_patients_dir": "master_csvs",
+    "logs_dir": "logs"
+}
