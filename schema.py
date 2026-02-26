@@ -36,6 +36,7 @@ def create_schema(db_path):
                 weight_kg REAL,                   -- Peso del paciente (si disponible)
                 height_cm REAL,                   -- Altura del paciente (si disponible)
                 source_filename TEXT,             -- Para auditoría
+                source_file_type TEXT,            -- Origen del dato (cap, hosp_mar, manual_csv, etc.)
                 extraction_date TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
             );

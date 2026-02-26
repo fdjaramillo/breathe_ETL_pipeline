@@ -147,8 +147,9 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
                 report_date, 
                 weight_kg,
                 height_cm,
-                source_filename
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                source_filename,
+                source_file_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 patient_id,
@@ -159,6 +160,7 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
                 report_data.get("weight_kg"),
                 report_data.get("height_cm"),
                 file_info.get("filename"),
+                file_info.get("source_file_type"),
             ),
         )
 
@@ -223,15 +225,6 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
                 """,
                     measurements_to_insert,
                 )
-
-        # 4. REGISTRO DE CONTROL
-        cursor.execute(
-            """
-            INSERT INTO processed_files (file_hash, file_name)
-            VALUES (?, ?)
-            """,
-            (file_info.get("file_hash"), file_info.get("filename")),
-        )
 
         # CONFIRMAR TRANSACCIÓN
         conn.commit()
