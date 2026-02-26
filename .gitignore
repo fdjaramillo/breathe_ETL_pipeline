@@ -24,10 +24,10 @@ __pycache__/
 # sqlite
 *.db
 
-# Configuración local
-config.json
-
 # Data
 macro_data/
 manual_entry_data/
 master_csvs/
+
+# logs
+logs/
