@@ -8,6 +8,7 @@ import schema
 import extractor_blood_test
 import extractor_spiro
 import extractor_macro
+import extractor_manual
 import loader
 
 
@@ -110,14 +111,13 @@ def is_file_processed(file_hash, db_path):
         return False
 
 
-def process_directory(directory, extractor, report_type, nhc_mapping, db_path):
+def process_directory(directory, extract_func, db_path, nhc_mapping, extension="pdf"):
     """
     Procesa todos los PDFs de un directorio con el extractor especificado.
 
     Args:
         directory: Ruta del directorio con PDFs
-        extractor: Módulo extractor (extractor_blood_test o extractor_spiro)
-        report_type: Tipo de reporte ('blood_test' o 'spirometry')
+        extract_func: Función de extracción (ej: extractor_manual.process_manual_csv o extractor_blood_test.process_pdf)
         nhc_mapping: Diccionario {nhc: subject_id} para anonimización
         db_path: Ruta de la base de datos
 
@@ -131,21 +131,24 @@ def process_directory(directory, extractor, report_type, nhc_mapping, db_path):
         return 0, 0, 0
 
     # Listar archivos PDF
-    pdf_files = list(directory.glob("*.pdf"))
-    total_files = len(pdf_files)
+    target_files = list(directory.glob(f"*.{extension}"))
+    total_files = len(target_files)
 
     if total_files == 0:
-        print(f"[INFO] No se encontraron archivos PDF en {directory}")
+        print(f"[INFO] No se encontraron archivos {extension} en {directory}")
         return 0, 0, 0
 
-    print(f"\n[INFO] Encontrados {total_files} archivos PDF en {directory}")
+    print(f"\n[INFO] Encontrados {total_files} archivos {extension} en {directory}")
 
     processed_count = 0
     skipped_count = 0
     error_count = 0
 
     # Bucle de procesamiento
-    for index, filepath in enumerate(pdf_files):
+    for index, filepath in enumerate(target_files):
+        if "(metadata)" in filepath.name:
+            continue
+
         print(f"\n[{index + 1}/{total_files}] Procesando: {filepath.name}")
 
         try:
@@ -160,26 +163,40 @@ def process_directory(directory, extractor, report_type, nhc_mapping, db_path):
 
             # C. Extracción (Minería)
             print("   -> Extrayendo datos...")
-            data_object = extractor.process_pdf(filepath, current_hash)
+            data_result = extract_func(filepath, current_hash)
 
             # Depuracion opcional
-            if report_type == "blood_test" and extractor == extractor_blood_test:
-                extractor_blood_test.debug_measurements(data_object)
+            if (
+                isinstance(data_result, dict)
+                and data_result.get("report", {}).get("report_type") == "blood_test"
+            ):
+                extractor_blood_test.debug_measurements(data_result)
 
-            if not data_object:
+            if not data_result:
                 print("   -> [ERROR] El extractor devolvió datos vacíos.")
                 error_count += 1
                 continue
 
             # D. Carga (Almacenamiento)
-            print("   -> Guardando en base de datos...")
-            success = loader.save_to_db(data_object, nhc_mapping, db_path)
+            data_blocks = (
+                data_result if isinstance(data_result, list) else [data_result]
+            )
 
-            if success:
+            print("   -> Guardando en base de datos...")
+            all_blocks_success = True
+            for block in data_blocks:
+                success = loader.save_to_db(block, db_path, nhc_mapping)
+                if not success:
+                    all_blocks_success = False
+
+            if all_blocks_success:
+                loader.mark_file_processed(current_hash, filepath.name, db_path)
                 print("   -> [OK] Procesamiento completado con éxito.")
                 processed_count += 1
             else:
-                print("   -> [FALLO] Error durante la inserción en DB.")
+                print(
+                    "   -> [FALLO] Error durante la inserción de uno o más bloques en DB."
+                )
                 error_count += 1
 
         except Exception as e:
@@ -208,12 +225,15 @@ def main():
     spirometry_dir = config.get("spirometry_dir")
     csv_mapping_path = config.get("csv_mapping_path")
     macro_dir = config.get("macro_dir")
+    manual_entry_dir = config.get("manual_entry_dir")
 
     # Nombre fijo de la base de datos (no viene del JSON)
     db_path = "clinical_data.db"
 
     # Validar que todas las claves estén presentes
-    if not all([blood_test_dir, spirometry_dir, csv_mapping_path, macro_dir]):
+    if not all(
+        [blood_test_dir, spirometry_dir, csv_mapping_path, macro_dir, manual_entry_dir]
+    ):
         print("[ERROR] Configuración incompleta. Verifica config.json")
         return
 
@@ -238,7 +258,7 @@ def main():
     print("FASE 1: ANÁLISIS DE SANGRE")
     print("=" * 100)
     processed, skipped, errors = process_directory(
-        blood_test_dir, extractor_blood_test, "blood_test", nhc_mapping, db_path
+        blood_test_dir, extractor_blood_test.process_pdf, db_path, nhc_mapping
     )
     total_processed += processed
     total_skipped += skipped
@@ -249,7 +269,7 @@ def main():
     print("FASE 2: ESPIROMETRÍA")
     print("=" * 100)
     processed, skipped, errors = process_directory(
-        spirometry_dir, extractor_spiro, "spirometry", nhc_mapping, db_path
+        spirometry_dir, extractor_spiro.process_pdf, db_path, nhc_mapping
     )
     total_processed += processed
     total_skipped += skipped
@@ -259,50 +279,50 @@ def main():
     print("\n" + "=" * 100)
     print("FASE 3: MACRO (CSV)")
     print("=" * 100)
+    processed, skipped, errors = process_directory(
+        macro_dir,
+        extractor_macro.process_csv,
+        db_path,
+        nhc_mapping=None,
+        extension="csv",
+    )
+    total_processed += processed
+    total_skipped += skipped
+    total_errors += errors
 
-    if not macro_dir.is_dir():
-        print(f"[WARN] No existe el directorio: {macro_dir}")
-    else:
-        csv_files = list(macro_dir.glob("*.csv"))
-        if not csv_files:
-            print(f"[INFO] No se encontraron archivos CSV en {macro_dir}")
-        else:
-            for index, filepath in enumerate(csv_files):
-                print(f"\n[{index + 1}/{len(csv_files)}] Procesando: {filepath.name}")
+    # 8. FASE 4: Procesar Entradas Manuales (Manual Entry)
+    manual_blood_test_dir = manual_entry_dir / "blood_tests"
+    manual_spirometry_dir = manual_entry_dir / "spirometry"
 
-                current_hash = get_file_hash(filepath)
+    print("\n" + "=" * 100)
+    print("FASE 4.1: ENTRADAS MANUALES: ANÁLISIS DE SANGRE")
+    print("=" * 100)
+    processed, skipped, errors = process_directory(
+        manual_blood_test_dir,
+        extractor_manual.process_manual_csv,
+        db_path,
+        nhc_mapping=None,
+        extension="csv",
+    )
+    total_processed += processed
+    total_skipped += skipped
+    total_errors += errors
 
-                if is_file_processed(current_hash, db_path):
-                    print(
-                        "   -> [SKIP] Archivo ya procesado previamente (Hash coincide)."
-                    )
-                    total_skipped += 1
-                    continue
+    print("\n" + "=" * 100)
+    print("FASE 4.2: ENTRADAS MANUALES: ESPIROMETRÍA")
+    print("=" * 100)
+    processed, skipped, errors = process_directory(
+        manual_spirometry_dir,
+        extractor_manual.process_manual_csv,
+        db_path,
+        nhc_mapping=None,
+        extension="csv",
+    )
+    total_processed += processed
+    total_skipped += skipped
+    total_errors += errors
 
-                print("   -> Extrayendo datos MACRO...")
-                blocks = extractor_macro.process_csv(filepath, current_hash)
-
-                if not blocks:
-                    print("   -> [ERROR] No se extrajeron bloques MACRO.")
-                    total_errors += 1
-                    continue
-
-                file_ok = True
-                for block in blocks:
-                    success = loader.save_to_db(block, db_path, nhc_mapping)
-                    if not success:
-                        file_ok = False
-                        break
-
-                if file_ok:
-                    loader.mark_file_processed(current_hash, filepath.name, db_path)
-                    print("   -> [OK] CSV MACRO procesado con éxito.")
-                    total_processed += 1
-                else:
-                    print("   -> [FALLO] Error en uno o más bloques MACRO.")
-                    total_errors += 1
-
-    # 8. Resumen Final
+    # 9. Resumen Final
     print("\n" + "=" * 100)
     print("RESUMEN DE EJECUCIÓN")
     print("=" * 100)
