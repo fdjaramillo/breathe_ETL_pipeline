@@ -1,4 +1,5 @@
 import sqlite3
+import logging
 
 
 def mark_file_processed(file_hash, file_name, db_path):
@@ -20,6 +21,93 @@ def mark_file_processed(file_hash, file_name, db_path):
             conn.rollback()
         print(f"    [ERROR] No se pudo marcar archivo procesado: {e}")
         return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def upsert_patient_details(patient_data, db_path):
+    """
+    Inserta un paciente nuevo o actualiza EXCLUSIVAMENTE los campos NULL de uno existente.
+    Registra en log cada operación realizada.
+
+    Args:
+        patient_data: Diccionario con subject_id, birth_date, sex
+        db_path: Ruta de la base de datos
+
+    Returns:
+        True si tuvo éxito, False si falló
+    """
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA foreign_keys = ON;")
+
+        subject_id = patient_data.get("subject_id")
+        new_birth = patient_data.get("birth_date")
+        new_sex = patient_data.get("sex")
+
+        # 1. Comprobar si el paciente existe
+        cursor.execute(
+            "SELECT patient_id, birth_date, sex FROM patients WHERE subject_id = ?",
+            (subject_id,),
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            # CASO INSERT: Paciente nuevo
+            cursor.execute(
+                "INSERT INTO patients (subject_id, birth_date, sex) VALUES (?, ?, ?)",
+                (subject_id, new_birth, new_sex),
+            )
+            conn.commit()
+            logging.info(
+                f"Paciente {subject_id}: Nuevo registro creado (birth_date={new_birth}, sex={new_sex})"
+            )
+            return True
+
+        # CASO UPDATE: Paciente existente
+        patient_id, current_birth, current_sex = row
+        updates = []
+        params = []
+        changes = []
+
+        # Solo actualizar campos NULL
+        if current_birth is None and new_birth is not None:
+            updates.append("birth_date = ?")
+            params.append(new_birth)
+            changes.append(f"birth_date: NULL → {new_birth}")
+
+        if current_sex is None and new_sex is not None:
+            updates.append("sex = ?")
+            params.append(new_sex)
+            changes.append(f"sex: NULL → {new_sex}")
+
+        if updates:
+            params.append(subject_id)
+            query = f"UPDATE patients SET {', '.join(updates)} WHERE subject_id = ?"
+            cursor.execute(query, params)
+            conn.commit()
+            logging.info(f"Paciente {subject_id}: Enriquecido ({', '.join(changes)})")
+            return True
+        else:
+            # No había nada que actualizar
+            logging.debug(f"Paciente {subject_id}: Sin cambios (datos ya completos)")
+            return True
+
+    except sqlite3.IntegrityError as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Paciente {subject_id}: Error de integridad ({e})")
+        return False
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Paciente {subject_id}: Fallo crítico en upsert ({e})")
+        return False
+
     finally:
         if conn:
             conn.close()
