@@ -19,7 +19,7 @@ def mark_file_processed(file_hash, file_name, db_path):
     except sqlite3.Error as e:
         if conn:
             conn.rollback()
-        print(f"    [ERROR] No se pudo marcar archivo procesado: {e}")
+        logging.error(f"No se pudo marcar archivo procesado: {e}")
         return False
     finally:
         if conn:
@@ -146,18 +146,30 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
         subject_id = None
 
         if nhc:
-            if nhc not in nhc_mapping:
-                print(
-                    f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' no encontrado en el mapeo."
-                    f"Archivo: {data_object['file_info']['filename']}"
+            # Si hay NHC, DEBE haber mapeo
+            if nhc_mapping is None:
+                logging.error(
+                    f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' encontrado pero nhc_mapping es None. "
+                    f"Archivo: {data_object.get('file_info', {}).get('filename', 'UNKNOWN')}"
                 )
                 conn.rollback()
                 return False
+
+            if nhc not in nhc_mapping:
+                logging.error(
+                    f"    [ERROR ANONIMIZACIÓN] NHC '{nhc}' no encontrado en el mapeo. "
+                    f"Archivo: {data_object.get('file_info', {}).get('filename', 'UNKNOWN')}"
+                )
+                conn.rollback()
+                return False
+
             subject_id = nhc_mapping[nhc]
+
         elif data_object.get("subject_id"):
             subject_id = data_object.get("subject_id")
+
         else:
-            print("    [ERROR] No se encontró 'nhc' ni 'subject_id' en data_object.")
+            logging.error("No se encontró 'nhc' ni 'subject_id' en data_object.")
             conn.rollback()
             return False
 
@@ -224,6 +236,24 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
         # --- Rama CUESTIONARIOS EXCEL ---
         if "questionnaire" in data_object:
             q_info = data_object["questionnaire"]
+
+            # Verificar idempotencia: ¿Ya existe esta sesión?
+            cursor.execute(
+                """
+                SELECT session_id FROM questionnaire_sessions 
+                WHERE patient_id = ? AND questionnaire_name = ? AND entry_date = ?
+                """,
+                (patient_id, q_info.get("name"), q_info.get("entry_date")),
+            )
+            existing_session = cursor.fetchone()
+
+            if existing_session:
+                logging.debug(
+                    f"Sesión de cuestionario ya existe para paciente {subject_id}, "
+                    f"cuestionario '{q_info.get('name')}', fecha {q_info.get('entry_date')}. Omitida."
+                )
+                conn.rollback()
+                return True  # Éxito: ya existe, no duplicamos
 
             # 1. Insertar el "Evento" en el Maestro
             cursor.execute(
@@ -352,16 +382,15 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
     except sqlite3.IntegrityError as e:
         if conn:
             conn.rollback()
-        print(
-            f"    [ERROR INTEGRIDAD] Fallo al guardar {data_object['file_info']['filename']}: {e}"
+        logging.error(
+            f"[ERROR INTEGRIDAD] Fallo al guardar {data_object.get('file_info', {}).get('filename', 'UNKNOWN')}: {e}"
         )
-        # Típico error: El hash ya existe (Unique constraint failed)
         return False
 
     except Exception as e:
         if conn:
             conn.rollback()
-        print(f"    [ERROR CRITICO] Fallo general en loader: {e}")
+        logging.error(f"[ERROR CRÍTICO] Fallo general en loader: {e}")
         return False
 
     finally:
