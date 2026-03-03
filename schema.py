@@ -122,6 +122,33 @@ def create_schema(db_path):
             """
         )
 
+        # 8. TABLA QUESTIONNAIRE_SESSIONS (Maestro: Una fila por cuestionario/paciente/día)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS questionnaire_sessions (
+                session_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                patient_id INTEGER NOT NULL,
+                questionnaire_name TEXT NOT NULL,
+                entry_date TEXT,
+                extraction_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
+            );
+            """
+        )
+
+        # 9. TABLA QUESTIONNAIRE_RESPONSES (Detalle: Las respuestas vinculadas a la sesión)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS questionnaire_responses (
+                response_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL,
+                question_label TEXT NOT NULL,
+                value TEXT,
+                FOREIGN KEY (session_id) REFERENCES questionnaire_sessions(session_id) ON DELETE CASCADE
+            );
+            """
+        )
+
         # Creación de índices para optimizar búsquedas futuras
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_patient_subject_id ON patients(subject_id);"

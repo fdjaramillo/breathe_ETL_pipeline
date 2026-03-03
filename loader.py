@@ -221,6 +221,37 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
             conn.commit()
             return True
 
+        # --- Rama CUESTIONARIOS EXCEL ---
+        if "questionnaire" in data_object:
+            q_info = data_object["questionnaire"]
+
+            # 1. Insertar el "Evento" en el Maestro
+            cursor.execute(
+                """
+                INSERT INTO questionnaire_sessions (patient_id, questionnaire_name, entry_date)
+                VALUES (?, ?, ?)
+                """,
+                (patient_id, q_info.get("name"), q_info.get("entry_date")),
+            )
+            session_id = cursor.lastrowid
+
+            # 2. Insertar todos los "Datos" en el Detalle usando el session_id
+            responses = data_object.get("responses", [])
+            if responses:
+                cursor.executemany(
+                    """
+                    INSERT INTO questionnaire_responses (session_id, question_label, value)
+                    VALUES (?, ?, ?)
+                    """,
+                    [
+                        (session_id, r.get("question"), str(r.get("value")))
+                        for r in responses
+                    ],
+                )
+
+            conn.commit()
+            return True
+
         # --- Rama PDF ---
         report_data = data_object["report"]
         file_info = data_object["file_info"]

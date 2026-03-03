@@ -11,6 +11,7 @@ import extractor_spiro
 import extractor_macro
 import extractor_manual
 import extractor_master
+import extractor_questionnaires
 import loader
 
 
@@ -254,6 +255,7 @@ def main():
     manual_entry_dir = config.get("manual_entry_dir")
     master_csvs = config.get("master_csvs")
     logs_dir = config.get("logs_dir")
+    questionnaires_dir = config.get("questionnaires_dir")
 
     # Nombre fijo de la base de datos
     db_path = "clinical_data.db"
@@ -429,6 +431,21 @@ def main():
         db_path,
         nhc_mapping=None,
         extension="csv",
+    )
+    total_processed += processed
+    total_skipped += skipped
+    total_errors += errors
+
+    # 10. FASE 5: Cuestionarios en Excel
+    logging.info("=" * 100)
+    logging.info("FASE 5: CUESTIONARIOS (EXCEL)")
+    logging.info("=" * 100)
+    processed, skipped, errors = process_directory(
+        questionnaires_dir,
+        extractor_questionnaires.process_excel,
+        db_path,
+        nhc_mapping=None,
+        extension="xlsx",
     )
     total_processed += processed
     total_skipped += skipped
