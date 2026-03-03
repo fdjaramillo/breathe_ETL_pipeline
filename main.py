@@ -49,16 +49,16 @@ def load_config(config_path="config.json"):
             if isinstance(value, str) and not key.startswith("run_"):
                 config[key] = Path(value)
 
-        logging.info(f"Configuración cargada desde {config_path}")
+        print(f"Configuración cargada desde {config_path}")
         return config
     except FileNotFoundError:
-        logging.error(f"Archivo de configuración no encontrado: {config_path}")
+        print(f"Archivo de configuración no encontrado: {config_path}")
         return None
     except json.JSONDecodeError as e:
-        logging.error(f"Error al parsear JSON en {config_path}: {e}")
+        print(f"Error al parsear JSON en {config_path}: {e}")
         return None
     except Exception as e:
-        logging.error(f"Error inesperado al cargar configuración: {e}")
+        print(f"Error inesperado al cargar configuración: {e}")
         return None
 
 
@@ -266,11 +266,6 @@ def main():
     run_phase_3 = config.get("run_phase_3", True)
     run_phase_4 = config.get("run_phase_4", True)
     run_phase_5 = config.get("run_phase_5", True)
-
-    logging.info(
-        f"Flags de ejecución: FASE 0={run_phase_0}, FASE 1={run_phase_1}, "
-        f"FASE 2={run_phase_2}, FASE 3={run_phase_3}, FASE 4={run_phase_4}, FASE 5={run_phase_5}"
-    )
 
     # 4. Nombre fijo de la base de datos
     db_path = "clinical_data.db"
