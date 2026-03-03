@@ -4,6 +4,7 @@
     "csv_mapping_path": "path/to/nhc_mapping.csv",
     "macro_dir": "macro_data",
     "manual_entry_dir": "manual_entry_data",
-    "master_patients_dir": "master_csvs",
+    "master_csvs": "master_csvs",
+    "questionnaires_dir": "path/to/excel_questionnaires",
     "logs_dir": "logs"
 }
