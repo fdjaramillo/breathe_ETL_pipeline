@@ -274,7 +274,7 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
                     VALUES (?, ?, ?)
                     """,
                     [
-                        (session_id, r.get("question"), str(r.get("value")))
+                        (session_id, r.get("question"), r.get("value"))
                         for r in responses
                     ],
                 )
