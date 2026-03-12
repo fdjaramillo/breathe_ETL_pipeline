@@ -4,13 +4,11 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import importlib
 
 import schema
 import dispatcher
 import audit_logger
-import extractor_blood_test
-import extractor_vh_blood_test
-import extractor_spiro
 import extractor_macro
 import extractor_manual
 import extractor_master
@@ -207,11 +205,10 @@ def process_pdf_directory(directory, db_path, nhc_mapping=None):
             data_result = extract_func(filepath, current_hash)
 
             # Debug opcional para análisis de sangre
-            if (
-                isinstance(data_result, dict)
-                and data_result.get("report", {}).get("report_type") == "blood_test"
-            ):
-                extractor_blood_test.debug_measurements(data_result)
+            module = importlib.import_module(extract_func.__module__)
+            debug_fn = getattr(module, "debug_measurements", None)
+            if callable(debug_fn):
+                debug_fn(data_result)
 
             if not data_result:
                 logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
@@ -328,11 +325,10 @@ def process_directory(
             data_result = extract_func(filepath, current_hash)
 
             # Depuracion opcional
-            if (
-                isinstance(data_result, dict)
-                and data_result.get("report", {}).get("report_type") == "blood_test"
-            ):
-                extractor_blood_test.debug_measurements(data_result)
+            module = importlib.import_module(extract_func.__module__)
+            debug_fn = getattr(module, "debug_measurements", None)
+            if callable(debug_fn):
+                debug_fn(data_result)
 
             if not data_result:
                 logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
