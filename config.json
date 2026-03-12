@@ -1,12 +1,10 @@
 {
     "run_phase_0": true,
     "run_phase_1": true,
-    "run_phase_2": true,
     "run_phase_3": true,
     "run_phase_4": true,
     "run_phase_5": true,
-    "blood_test_dir": "path/to/blood_pdfs",
-    "spirometry_dir": "path/to/spirometry_pdfs",
+    "raw_ingestion_dir": "01_raw",
     "csv_mapping_path": "path/to/nhc_mapping.csv",
     "macro_dir": "macro_data",
     "manual_entry_dir": "manual_entry_data",

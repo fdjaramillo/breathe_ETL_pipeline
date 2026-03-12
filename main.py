@@ -6,7 +6,10 @@ import logging
 from pathlib import Path
 
 import schema
+import dispatcher
+import audit_logger
 import extractor_blood_test
+import extractor_vh_blood_test
 import extractor_spiro
 import extractor_macro
 import extractor_manual
@@ -115,6 +118,154 @@ def is_file_processed(file_hash, db_path):
         return result is not None
     except sqlite3.Error:
         return False
+
+
+def _resolve_patient_id(block, nhc_mapping):
+    """
+    Best-effort extraction of a patient identifier from a data block.
+    Used only for audit CSV enrichment — never blocks processing.
+    """
+    subject_id = block.get("subject_id")
+    if subject_id:
+        return str(subject_id)
+
+    nhc = block.get("patient", {}).get("nhc")
+    if nhc:
+        if nhc_mapping:
+            return nhc_mapping.get(nhc, nhc)
+        return nhc
+
+    return None
+
+
+def process_pdf_directory(directory, db_path, nhc_mapping=None):
+    """
+    Recursively processes all PDFs under *directory* using the dispatcher
+    to identify the file type and select the correct extractor.
+
+    Args:
+        directory:   Root directory to search recursively.
+        db_path:     SQLite database path.
+        nhc_mapping: Optional {nhc: subject_id} dict for PHI de-identification.
+
+    Returns:
+        Tuple (processed_count, skipped_count, error_count).
+    """
+    directory = Path(directory)
+
+    if not directory.is_dir():
+        logging.warning(f"Directorio no encontrado: {directory}")
+        return 0, 0, 0
+
+    target_files = sorted(directory.rglob("*.pdf"))
+    total_files = len(target_files)
+
+    if total_files == 0:
+        logging.info(f"No se encontraron PDFs en {directory} (búsqueda recursiva)")
+        return 0, 0, 0
+
+    logging.info(
+        f"Encontrados {total_files} archivos PDF en {directory} (búsqueda recursiva)"
+    )
+
+    processed_count = 0
+    skipped_count = 0
+    error_count = 0
+
+    for index, filepath in enumerate(target_files, start=1):
+        logging.info(f"[{index}/{total_files}] Procesando: {filepath}")
+
+        try:
+            # A. Hash + idempotencia
+            current_hash = get_file_hash(filepath)
+            if is_file_processed(current_hash, db_path):
+                logging.info(
+                    "  → [SKIP] Archivo ya procesado previamente (Hash coincide)."
+                )
+                audit_logger.log_to_master_csv(
+                    filepath, "SKIPPED", reason="Hash duplicado"
+                )
+                skipped_count += 1
+                continue
+
+            # B. Triaje — identificar tipo y seleccionar extractor
+            file_type = dispatcher.identify_file_type(filepath)
+            extract_func = dispatcher.FILE_TYPE_TO_EXTRACTOR.get(file_type)
+
+            if extract_func is None:
+                logging.warning(
+                    f"  → [UNKNOWN] Formato no soportado para: {filepath.name}"
+                )
+                audit_logger.log_to_master_csv(
+                    filepath, "UNKNOWN", reason="Formato no soportado"
+                )
+                error_count += 1
+                continue
+
+            # C. Extracción
+            logging.info(f"  → Extrayendo datos con {extract_func.__module__}...")
+            data_result = extract_func(filepath, current_hash)
+
+            # Debug opcional para análisis de sangre
+            if (
+                isinstance(data_result, dict)
+                and data_result.get("report", {}).get("report_type") == "blood_test"
+            ):
+                extractor_blood_test.debug_measurements(data_result)
+
+            if not data_result:
+                logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
+                audit_logger.log_to_master_csv(
+                    filepath,
+                    "ERROR",
+                    reason="El extractor devolvió datos vacíos",
+                )
+                error_count += 1
+                continue
+
+            # D. Carga
+            data_blocks = (
+                data_result if isinstance(data_result, list) else [data_result]
+            )
+
+            logging.info("  → Guardando en base de datos...")
+            all_blocks_success = True
+            patient_id = None
+
+            for block in data_blocks:
+                success = loader.save_to_db(block, db_path, nhc_mapping)
+                if not success:
+                    all_blocks_success = False
+                if patient_id is None:
+                    patient_id = _resolve_patient_id(block, nhc_mapping)
+
+            if all_blocks_success:
+                loader.mark_file_processed(current_hash, filepath.name, db_path)
+                audit_logger.log_to_master_csv(
+                    filepath, "PROCESSED", patient_id=patient_id
+                )
+                logging.info("  → [OK] Procesamiento completado con éxito.")
+                processed_count += 1
+            else:
+                audit_logger.log_to_master_csv(
+                    filepath,
+                    "ERROR",
+                    patient_id=patient_id,
+                    reason="Error en inserción DB",
+                )
+                logging.error(
+                    "  → [FALLO] Error durante la inserción de uno o más bloques en DB."
+                )
+                error_count += 1
+
+        except Exception as e:
+            logging.error(
+                f"  → [EXCEPCIÓN] Error crítico procesando {filepath.name}: {e}"
+            )
+            audit_logger.log_to_master_csv(filepath, "ERROR", reason=f"Excepción: {e}")
+            error_count += 1
+
+    return processed_count, skipped_count, error_count
 
 
 def process_directory(
@@ -262,7 +413,6 @@ def main():
     # 3. Extraer flags de ejecución
     run_phase_0 = config.get("run_phase_0", True)
     run_phase_1 = config.get("run_phase_1", True)
-    run_phase_2 = config.get("run_phase_2", True)
     run_phase_3 = config.get("run_phase_3", True)
     run_phase_4 = config.get("run_phase_4", True)
     run_phase_5 = config.get("run_phase_5", True)
@@ -279,16 +429,16 @@ def main():
     total_skipped = 0
     total_errors = 0
 
-    # 7. Cargar mapeo NHC (SOLO si se necesita para Fase 1 o 2)
+    # 7. Cargar mapeo NHC (SOLO si la fase PDF unificada está activa)
     nhc_mapping = None
-    if run_phase_1 or run_phase_2:
+    if run_phase_1:
         csv_mapping_path = config.get("csv_mapping_path")
         if csv_mapping_path:
             logging.info("Cargando mapeo de anonimización...")
             nhc_mapping = load_nhc_mapping(csv_mapping_path)
-            if nhc_mapping is None and (run_phase_1 or run_phase_2):
+            if nhc_mapping is None:
                 logging.warning(
-                    "Mapeo NHC no disponible. Las Fases 1 y 2 (PDF) requieren este archivo."
+                    "Mapeo NHC no disponible. La fase PDF (triaje e ingesta) puede requerirlo."
                 )
         else:
             logging.warning("csv_mapping_path no definido en config.json")
@@ -381,46 +531,25 @@ def main():
         logging.info("FASE 0 desactivada (run_phase_0=False)")
 
     # ========================================
-    # FASE 1: ANÁLISIS DE SANGRE
+    # FASE 1: TRIAJE E INGESTA PDF
     # ========================================
     if run_phase_1:
         logging.info("=" * 100)
-        logging.info("FASE 1: ANÁLISIS DE SANGRE")
+        logging.info("FASE 1: TRIAJE E INGESTA PDF")
         logging.info("=" * 100)
 
-        blood_test_dir = config.get("blood_test_dir")
-        if blood_test_dir:
-            processed, skipped, errors = process_directory(
-                blood_test_dir, extractor_blood_test.process_pdf, db_path, nhc_mapping
+        raw_ingestion_dir = config.get("raw_ingestion_dir")
+        if raw_ingestion_dir:
+            processed, skipped, errors = process_pdf_directory(
+                raw_ingestion_dir, db_path, nhc_mapping
             )
             total_processed += processed
             total_skipped += skipped
             total_errors += errors
         else:
-            logging.warning("blood_test_dir no definido en config.json")
+            logging.warning("raw_ingestion_dir no definido en config.json")
     else:
         logging.info("FASE 1 desactivada (run_phase_1=False)")
-
-    # ========================================
-    # FASE 2: ESPIROMETRÍA
-    # ========================================
-    if run_phase_2:
-        logging.info("=" * 100)
-        logging.info("FASE 2: ESPIROMETRÍA")
-        logging.info("=" * 100)
-
-        spirometry_dir = config.get("spirometry_dir")
-        if spirometry_dir:
-            processed, skipped, errors = process_directory(
-                spirometry_dir, extractor_spiro.process_pdf, db_path, nhc_mapping
-            )
-            total_processed += processed
-            total_skipped += skipped
-            total_errors += errors
-        else:
-            logging.warning("spirometry_dir no definido en config.json")
-    else:
-        logging.info("FASE 2 desactivada (run_phase_2=False)")
 
     # ========================================
     # FASE 3: MACRO (CSV)
