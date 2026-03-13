@@ -477,7 +477,7 @@ def main():
     # ========================================
     if run_phase_4:
         logging.info("=" * 100)
-        logging.info("FASE 4.1: ENTRADAS MANUALES - ANÁLISIS DE SANGRE")
+        logging.info("FASE 4.1: ENTRADAS MANUALES (EXCEL) - ANÁLISIS DE SANGRE")
         logging.info("=" * 100)
 
         manual_entry_dir = config.get("manual_entry_dir")
@@ -486,25 +486,25 @@ def main():
             processed, skipped, errors = process_files(
                 manual_blood_test_dir,
                 db_path,
-                extract_func=extractor_manual.process_manual_csv,
+                extract_func=extractor_manual.process_manual_excel,
                 nhc_mapping=None,
-                extension="csv",
+                extension="xlsx",
             )
             total_processed += processed
             total_skipped += skipped
             total_errors += errors
 
             logging.info("=" * 100)
-            logging.info("FASE 4.2: ENTRADAS MANUALES - ESPIROMETRÍA")
+            logging.info("FASE 4.2: ENTRADAS MANUALES (EXCEL) - ESPIROMETRÍA")
             logging.info("=" * 100)
 
             manual_spirometry_dir = Path(manual_entry_dir) / "spirometry"
             processed, skipped, errors = process_files(
                 manual_spirometry_dir,
                 db_path,
-                extract_func=extractor_manual.process_manual_csv,
+                extract_func=extractor_manual.process_manual_excel,
                 nhc_mapping=None,
-                extension="csv",
+                extension="xlsx",
             )
             total_processed += processed
             total_skipped += skipped
