@@ -136,15 +136,31 @@ def _resolve_patient_id(block, nhc_mapping):
     return None
 
 
-def process_pdf_directory(directory, db_path, nhc_mapping=None):
+def _debug_measurements_if_available(extract_func, data_result):
     """
-    Recursively processes all PDFs under *directory* using the dispatcher
-    to identify the file type and select the correct extractor.
+    Executes extractor-specific debug_measurements() only when available.
+    """
+    module = importlib.import_module(extract_func.__module__)
+    debug_fn = getattr(module, "debug_measurements", None)
+    if callable(debug_fn):
+        debug_fn(data_result)
+
+
+def process_files(
+    directory, db_path, extract_func=None, nhc_mapping=None, extension="pdf"
+):
+    """
+    Processes files recursively under *directory*.
+
+    If extract_func is None, the extractor is selected dynamically through the
+    PDF dispatcher. Otherwise, the provided extractor is used directly.
 
     Args:
-        directory:   Root directory to search recursively.
-        db_path:     SQLite database path.
+        directory: Root directory to search recursively.
+        db_path: SQLite database path.
+        extract_func: Optional extraction callable.
         nhc_mapping: Optional {nhc: subject_id} dict for PHI de-identification.
+        extension: File extension to search for.
 
     Returns:
         Tuple (processed_count, skipped_count, error_count).
@@ -155,15 +171,17 @@ def process_pdf_directory(directory, db_path, nhc_mapping=None):
         logging.warning(f"Directorio no encontrado: {directory}")
         return 0, 0, 0
 
-    target_files = sorted(directory.rglob("*.pdf"))
+    target_files = sorted(directory.rglob(f"*.{extension}"))
     total_files = len(target_files)
 
     if total_files == 0:
-        logging.info(f"No se encontraron PDFs en {directory} (búsqueda recursiva)")
+        logging.info(
+            f"No se encontraron archivos {extension} en {directory} (búsqueda recursiva)"
+        )
         return 0, 0, 0
 
     logging.info(
-        f"Encontrados {total_files} archivos PDF en {directory} (búsqueda recursiva)"
+        f"Encontrados {total_files} archivos {extension} en {directory} (búsqueda recursiva)"
     )
 
     processed_count = 0
@@ -186,29 +204,31 @@ def process_pdf_directory(directory, db_path, nhc_mapping=None):
                 skipped_count += 1
                 continue
 
-            # B. Triaje — identificar tipo y seleccionar extractor
-            file_type = dispatcher.identify_file_type(filepath)
-            extract_func = dispatcher.FILE_TYPE_TO_EXTRACTOR.get(file_type)
+            # B. Selección de extractor
+            selected_extract_func = extract_func
+            if selected_extract_func is None:
+                file_type = dispatcher.identify_file_type(filepath)
+                selected_extract_func = dispatcher.FILE_TYPE_TO_EXTRACTOR.get(file_type)
 
-            if extract_func is None:
-                logging.warning(
-                    f"  → [UNKNOWN] Formato no soportado para: {filepath.name}"
+                if selected_extract_func is None:
+                    logging.warning(
+                        f"  → [UNKNOWN] Formato no soportado para: {filepath.name}"
+                    )
+                    audit_logger.log_to_master_csv(
+                        filepath, "UNKNOWN", reason="Formato no soportado"
+                    )
+                    error_count += 1
+                    continue
+
+                logging.info(
+                    f"  → [DISPATCHER] Extractor seleccionado: {selected_extract_func.__module__}"
                 )
-                audit_logger.log_to_master_csv(
-                    filepath, "UNKNOWN", reason="Formato no soportado"
-                )
-                error_count += 1
-                continue
 
             # C. Extracción
-            logging.info(f"  → Extrayendo datos con {extract_func.__module__}...")
-            data_result = extract_func(filepath, current_hash)
-
-            # Debug opcional para análisis de sangre
-            module = importlib.import_module(extract_func.__module__)
-            debug_fn = getattr(module, "debug_measurements", None)
-            if callable(debug_fn):
-                debug_fn(data_result)
+            logging.info(
+                f"  → Extrayendo datos con {selected_extract_func.__module__}..."
+            )
+            data_result = selected_extract_func(filepath, current_hash)
 
             if not data_result:
                 logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
@@ -219,6 +239,8 @@ def process_pdf_directory(directory, db_path, nhc_mapping=None):
                 )
                 error_count += 1
                 continue
+
+            _debug_measurements_if_available(selected_extract_func, data_result)
 
             # D. Carga
             data_blocks = (
@@ -260,107 +282,6 @@ def process_pdf_directory(directory, db_path, nhc_mapping=None):
                 f"  → [EXCEPCIÓN] Error crítico procesando {filepath.name}: {e}"
             )
             audit_logger.log_to_master_csv(filepath, "ERROR", reason=f"Excepción: {e}")
-            error_count += 1
-
-    return processed_count, skipped_count, error_count
-
-
-def process_directory(
-    directory, extract_func, db_path, nhc_mapping=None, extension="pdf"
-):
-    """
-    Procesa todos los archivos de un directorio con el extractor especificado.
-
-    Args:
-        directory: Ruta del directorio
-        extract_func: Función de extracción
-        db_path: Ruta de la base de datos
-        nhc_mapping: Diccionario {nhc: subject_id} (OPCIONAL, puede ser None)
-        extension: Extensión de archivo a buscar
-
-    Returns:
-        Tupla (processed_count, skipped_count, error_count)
-    """
-    directory = Path(directory)
-
-    if not directory.is_dir():
-        logging.warning(f"Directorio no encontrado: {directory}")
-        return 0, 0, 0
-
-    # Listar archivos
-    target_files = list(directory.glob(f"*.{extension}"))
-    total_files = len(target_files)
-
-    if total_files == 0:
-        logging.info(f"No se encontraron archivos {extension} en {directory}")
-        return 0, 0, 0
-
-    logging.info(f"Encontrados {total_files} archivos {extension} en {directory}")
-
-    processed_count = 0
-    skipped_count = 0
-    error_count = 0
-
-    # Bucle de procesamiento
-    for index, filepath in enumerate(target_files, start=1):
-        if "(metadata)" in filepath.name:
-            continue
-
-        logging.info(f"[{index}/{total_files}] Procesando: {filepath.name}")
-
-        try:
-            # A. Calcular Hash para verificar idempotencia
-            current_hash = get_file_hash(filepath)
-
-            # B. Verificar si ya existe en DB
-            if is_file_processed(current_hash, db_path):
-                logging.info(
-                    "  → [SKIP] Archivo ya procesado previamente (Hash coincide)."
-                )
-                skipped_count += 1
-                continue
-
-            # C. Extracción (Minería)
-            logging.info("  → Extrayendo datos...")
-            data_result = extract_func(filepath, current_hash)
-
-            # Depuracion opcional
-            module = importlib.import_module(extract_func.__module__)
-            debug_fn = getattr(module, "debug_measurements", None)
-            if callable(debug_fn):
-                debug_fn(data_result)
-
-            if not data_result:
-                logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
-                error_count += 1
-                continue
-
-            # D. Carga (Almacenamiento)
-            data_blocks = (
-                data_result if isinstance(data_result, list) else [data_result]
-            )
-
-            logging.info("  → Guardando en base de datos...")
-            all_blocks_success = True
-            for block in data_blocks:
-                success = loader.save_to_db(block, db_path, nhc_mapping)
-                if not success:
-                    all_blocks_success = False
-
-            if all_blocks_success:
-                loader.mark_file_processed(current_hash, filepath.name, db_path)
-                logging.info("  → [OK] Procesamiento completado con éxito.")
-                processed_count += 1
-            else:
-                logging.error(
-                    "  → [FALLO] Error durante la inserción de uno o más bloques en DB."
-                )
-                error_count += 1
-
-        except Exception as e:
-            logging.error(
-                f"  → [EXCEPCIÓN] Error crítico procesando archivo {filepath.name}: {e}"
-            )
             error_count += 1
 
     return processed_count, skipped_count, error_count
@@ -536,8 +457,12 @@ def main():
 
         raw_ingestion_dir = config.get("raw_ingestion_dir")
         if raw_ingestion_dir:
-            processed, skipped, errors = process_pdf_directory(
-                raw_ingestion_dir, db_path, nhc_mapping
+            processed, skipped, errors = process_files(
+                raw_ingestion_dir,
+                db_path,
+                extract_func=None,
+                nhc_mapping=nhc_mapping,
+                extension="pdf",
             )
             total_processed += processed
             total_skipped += skipped
@@ -557,10 +482,10 @@ def main():
 
         macro_dir = config.get("macro_dir")
         if macro_dir:
-            processed, skipped, errors = process_directory(
+            processed, skipped, errors = process_files(
                 macro_dir,
-                extractor_macro.process_csv,
                 db_path,
+                extract_func=extractor_macro.process_csv,
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -583,10 +508,10 @@ def main():
         manual_entry_dir = config.get("manual_entry_dir")
         if manual_entry_dir:
             manual_blood_test_dir = Path(manual_entry_dir) / "blood_tests"
-            processed, skipped, errors = process_directory(
+            processed, skipped, errors = process_files(
                 manual_blood_test_dir,
-                extractor_manual.process_manual_csv,
                 db_path,
+                extract_func=extractor_manual.process_manual_csv,
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -599,10 +524,10 @@ def main():
             logging.info("=" * 100)
 
             manual_spirometry_dir = Path(manual_entry_dir) / "spirometry"
-            processed, skipped, errors = process_directory(
+            processed, skipped, errors = process_files(
                 manual_spirometry_dir,
-                extractor_manual.process_manual_csv,
                 db_path,
+                extract_func=extractor_manual.process_manual_csv,
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -624,10 +549,10 @@ def main():
 
         questionnaires_dir = config.get("questionnaires_dir")
         if questionnaires_dir:
-            processed, skipped, errors = process_directory(
+            processed, skipped, errors = process_files(
                 questionnaires_dir,
-                extractor_questionnaires.process_excel,
                 db_path,
+                extract_func=extractor_questionnaires.process_excel,
                 nhc_mapping=None,
                 extension="xlsx",
             )
