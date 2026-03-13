@@ -3,8 +3,7 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
-import extractor_blood_test
-import extractor_vh_blood_test
+import extractor_blood
 import extractor_spiro
 
 # ---------------------------------------------------------------------------
@@ -59,8 +58,8 @@ _PRIORITY_RULES = [
 # Public dispatch map: detected type -> extractor callable
 # ---------------------------------------------------------------------------
 FILE_TYPE_TO_EXTRACTOR = {
-    BLOOD_TEST_CLINIC: extractor_blood_test.process_pdf,
-    BLOOD_TEST_VH: extractor_vh_blood_test.process_pdf,
+    BLOOD_TEST_CLINIC: extractor_blood.process_clinic_pdf,
+    BLOOD_TEST_VH: extractor_blood.process_vh_pdf,
     SPIROMETRY_CLINIC: extractor_spiro.process_pdf,
     SPIROMETRY_CAP: extractor_spiro.process_pdf,
 }

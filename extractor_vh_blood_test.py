@@ -5,6 +5,7 @@ import logging
 import re
 from pathlib import Path
 
+from blood_extractor_base import BaseBloodTestExtractor
 from utils.normalization import normalize_date, normalize_sex
 
 # Definir umbrales de tolerancia (EPSILON_Y = 4.0, etc.)
@@ -276,54 +277,56 @@ class PDFExtractor:
             self.document.close()
 
 
-def _extract_patient_metadata(doc) -> dict:
-    page_text = doc[0].get_text("text") if len(doc) else ""
-    nhc_match = NHC_RE.search(page_text)
-    birth_date_match = BIRTH_DATE_RE.search(page_text)
-    sex_match = SEX_RE.search(page_text)
+class VHBloodTestExtractor(BaseBloodTestExtractor):
+    source_file_type = "vh"
 
-    patient = {}
-    if nhc_match:
-        patient["nhc"] = nhc_match.group(1).strip()
-    if birth_date_match:
-        patient["birth_date"] = normalize_date(birth_date_match.group(1))
-    if sex_match:
-        patient["sex"] = normalize_sex(sex_match.group(1).strip())
+    def extract_patient(self, doc) -> dict:
+        page_text = doc[0].get_text("text") if len(doc) else ""
+        nhc_match = NHC_RE.search(page_text)
+        birth_date_match = BIRTH_DATE_RE.search(page_text)
+        sex_match = SEX_RE.search(page_text)
 
-    return patient
+        patient = {}
+        if nhc_match:
+            patient["nhc"] = nhc_match.group(1).strip()
+        if birth_date_match:
+            patient["birth_date"] = normalize_date(birth_date_match.group(1))
+        if sex_match:
+            patient["sex"] = normalize_sex(sex_match.group(1).strip())
 
+        return patient
 
-def _extract_report_metadata(doc) -> dict:
-    page_text = doc[0].get_text("text") if len(doc) else ""
+    def extract_report(self, doc) -> dict:
+        page_text = doc[0].get_text("text") if len(doc) else ""
 
-    report = {"report_type": "blood_test"}
-    date_match = REPORT_DATE_RE.search(page_text)
+        report = {"report_type": "blood_test"}
+        date_match = REPORT_DATE_RE.search(page_text)
 
-    if date_match:
-        report_date = normalize_date(date_match.group(1))
-        if report_date:
-            report["report_date"] = report_date
+        if date_match:
+            report_date = normalize_date(date_match.group(1))
+            if report_date:
+                report["report_date"] = report_date
 
-    return report
+        return report
 
-
-def _flatten_hierarchy(extracted_hierarchy: dict) -> list:
-    measurements = []
-    for section, subsections in extracted_hierarchy.items():
-        for subsection, rows in subsections.items():
-            for row in rows:
-                measurements.append(
-                    {
-                        "section": section,
-                        "subsection": subsection,
-                        "parameter": row.get("parameter"),
-                        "value": row.get("value"),
-                        "unit": row.get("unit"),
-                        "reference_range": row.get("reference_range"),
-                        "value_in_bold": 1 if row.get("flag") else 0,
-                    }
-                )
-    return measurements
+    def extract_measurements(self, doc) -> list:
+        hierarchy = PDFExtractor(self.filepath).run()
+        measurements = []
+        for section, subsections in hierarchy.items():
+            for subsection, rows in subsections.items():
+                for row in rows:
+                    measurements.append(
+                        {
+                            "section": section,
+                            "subsection": subsection,
+                            "parameter": row.get("parameter"),
+                            "value": row.get("value"),
+                            "unit": row.get("unit"),
+                            "reference_range": row.get("reference_range"),
+                            "value_in_bold": 1 if row.get("flag") else 0,
+                        }
+                    )
+        return measurements
 
 
 def process_pdf(filepath, file_hash):
@@ -332,44 +335,14 @@ def process_pdf(filepath, file_hash):
     al formato esperado por loader.save_to_db().
     """
     try:
-        pdf_file = Path(filepath)
-        # Extraer mediciones con el motor geométrico.
-        hierarchy = PDFExtractor(pdf_file).run()
-        measurements = _flatten_hierarchy(hierarchy)
-
-        if not measurements:
+        result = VHBloodTestExtractor(filepath, file_hash).process()
+        if not result.get("measurements"):
             return None
-
-        # Reabrir solo para metadatos ligeros de cabecera.
-        doc = fitz.open(pdf_file)
-        try:
-            patient = _extract_patient_metadata(doc)
-            report = _extract_report_metadata(doc)
-        finally:
-            doc.close()
-
-        return {
-            "file_info": {
-                "filename": pdf_file.name,
-                "file_hash": file_hash,
-                "source_file_type": "vh",
-            },
-            "patient": patient,
-            "report": report,
-            "measurements": measurements,
-        }
+        return result
 
     except (fitz.FileDataError, RuntimeError, ValueError) as error:
-        logging.error("Error procesando %s: %s", pdf_file.name, error)
+        logging.error("Error procesando %s: %s", Path(filepath).name, error)
         return None
     except Exception:
-        logging.exception("Error inesperado procesando %s", pdf_file.name)
+        logging.exception("Error inesperado procesando %s", Path(filepath).name)
         return None
-
-
-if __name__ == "__main__":
-    # run extractor standalone para pruebas locales
-    ruta = "/Users/davidjaramillo/Downloads/analiticahb03eosinofilosjun2025.pdf"
-    resultado = process_pdf(ruta, "dummy_hash")
-    logging.info("%s", resultado.get("patient"))
-    logging.info("%s", resultado.get("report"))
