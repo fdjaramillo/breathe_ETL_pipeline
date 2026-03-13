@@ -102,10 +102,10 @@ def upsert_patient_details(patient_data, db_path):
         logging.error(f"Paciente {subject_id}: Error de integridad ({e})")
         return False
 
-    except Exception as e:
+    except Exception:
         if conn:
             conn.rollback()
-        logging.error(f"Paciente {subject_id}: Fallo crítico en upsert ({e})")
+        logging.exception("Paciente %s: Fallo crítico en upsert", subject_id)
         return False
 
     finally:
@@ -387,10 +387,10 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
         )
         return False
 
-    except Exception as e:
+    except Exception:
         if conn:
             conn.rollback()
-        logging.error(f"[ERROR CRÍTICO] Fallo general en loader: {e}")
+        logging.exception("[ERROR CRÍTICO] Fallo general en loader")
         return False
 
     finally:

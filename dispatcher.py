@@ -102,8 +102,17 @@ def identify_file_type(filepath) -> str:
         logging.warning(f"  → [DISPATCHER] Tipo no reconocido para: {filepath.name}")
         return UNKNOWN
 
-    except Exception as e:
-        logging.error(f"  → [DISPATCHER] Error al abrir PDF {filepath.name}: {e}")
+    except (fitz.FileDataError, RuntimeError, ValueError) as error:
+        logging.error(
+            "  → [DISPATCHER] Error al abrir PDF %s: %s",
+            filepath.name,
+            error,
+        )
+        return UNKNOWN
+    except Exception:
+        logging.exception(
+            "  → [DISPATCHER] Error inesperado al abrir PDF %s", filepath.name
+        )
         return UNKNOWN
 
     finally:
