@@ -1,20 +1,9 @@
 import csv
-from datetime import datetime
+import logging
 from collections import defaultdict
-from pathlib import Path
 import re
 
-
-def normalize_date(date_str):
-    if not date_str:
-        return None
-    date_str = date_str.strip()
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return date_str
+from utils.normalization import normalize_date
 
 
 def process_manual_csv(data_filepath, file_hash):
@@ -28,8 +17,9 @@ def process_manual_csv(data_filepath, file_hash):
     elif "blood" in data_filepath.name.lower():
         report_type = "blood_test"
     else:
-        print(
-            f"    [WARN] No se pudo determinar el tipo de reporte para el archivo: {data_filepath.name}. Se omitirá."
+        logging.warning(
+            "    [WARN] No se pudo determinar el tipo de reporte para el archivo: %s. Se omitirá.",
+            data_filepath.name,
         )
         return []
 
@@ -48,8 +38,9 @@ def process_manual_csv(data_filepath, file_hash):
                     "source": row.get("source", "manual_csv").strip(),
                 }
     else:
-        print(
-            f"    [WARN] Archivo de metadatos no encontrado para: {data_filepath.name}"
+        logging.warning(
+            "    [WARN] Archivo de metadatos no encontrado para: %s",
+            data_filepath.name,
         )
 
     blocks = defaultdict(list)

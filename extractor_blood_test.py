@@ -1,5 +1,7 @@
 import fitz  # PyMuPDF
-from datetime import datetime
+import logging
+
+from utils.normalization import normalize_date, normalize_sex
 
 
 def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
@@ -10,26 +12,29 @@ def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
     if not data_object or "measurements" not in data_object:
         return
 
-    print(f"\n-------------------DEBUG-------------------------")
+    logging.info("-------------------DEBUG-------------------------")
     count = 0
     for m in data_object["measurements"]:
         # Si target_section es
         if m.get("section") == target_section and not m.get("parameter").startswith(
             "I"
         ):
-            print(
-                f"[{m.get('section')}] "
-                f"{m.get('parameter')}: {m.get('value')} "
-                f"({m.get('unit')}) "
-                f"| Bold: {m.get('value_in_bold')}"
+            logging.info(
+                "[%s] %s: %s (%s) | Bold: %s",
+                m.get("section"),
+                m.get("parameter"),
+                m.get("value"),
+                m.get("unit"),
+                m.get("value_in_bold"),
             )
             count += 1
 
     if count == 0:
-        print(
-            f"   (No se encontraron mediciones que no empiecen con 'I' para la sección: {target_section})"
+        logging.info(
+            "   (No se encontraron mediciones que no empiecen con 'I' para la sección: %s)",
+            target_section,
         )
-    print("------------------------------------------------\n")
+    logging.info("------------------------------------------------")
 
 
 def extract_patient_info(doc):
@@ -50,11 +55,9 @@ def extract_patient_info(doc):
     for line in text_block_2:
         if "Data naix." in line:
             date = line.split(":")[-1].strip()
-            patient_info["birth_date"] = datetime.strptime(date, "%d/%m/%Y").strftime(
-                "%Y-%m-%d"
-            )
+            patient_info["birth_date"] = normalize_date(date)
         elif "Sexo/Sexe" in line:
-            patient_info["sex"] = line.split(":")[-1].strip()
+            patient_info["sex"] = normalize_sex(line.split(":")[-1].strip())
 
     return patient_info
 
@@ -74,9 +77,7 @@ def extract_report_info(doc):
             report_info["episode_number"] = line.split(":")[-1].strip()
         elif "Data recepció mostra" in line:
             date = line.split(",")[0].replace("Data recepció mostra:", "").strip()
-            report_info["report_date"] = datetime.strptime(date, "%d/%m/%Y").strftime(
-                "%Y-%m-%d"
-            )
+            report_info["report_date"] = normalize_date(date)
 
     return report_info
 
@@ -108,7 +109,7 @@ def extract_measurements(doc):
 
                 # skip empty or invalid rows
                 if not row or len(row) < 4:
-                    print(f"⚠️ Warning: invalid row found and skipped: {row}")
+                    logging.warning("Warning: invalid row found and skipped: %s", row)
                     continue
 
                 # initialize variables
@@ -144,7 +145,9 @@ def extract_measurements(doc):
                 if not unit:
                     if not value.startswith("Classe"):
                         parameter = parameter.replace("\n", " ")
-                        print(f"⚠️ Warning: skipping line without unit: {parameter}")
+                        logging.warning(
+                            "Warning: skipping line without unit: %s", parameter
+                        )
                     continue
 
                 # Check bold
@@ -173,11 +176,11 @@ def extract_measurements(doc):
 def process_pdf(filepath, file_hash):
     """
     Procesa un solo archivo de principio a fin.
-    
+
     Args:
         filepath: Ruta del archivo PDF
         file_hash: Hash SHA256 del archivo (calculado en main.py)
-        
+
     Retorna:
         Diccionario con los datos extraídos o None si falla.
     """
@@ -209,6 +212,9 @@ def process_pdf(filepath, file_hash):
 
         return full_data_object
 
-    except Exception as e:
-        print(f"Error procesando {filepath.name}: {e}")
+    except (fitz.FileDataError, IndexError, AttributeError, ValueError) as error:
+        logging.error("Error procesando %s: %s", filepath.name, error)
+        return None
+    except Exception:
+        logging.exception("Error inesperado procesando %s", filepath.name)
         return None

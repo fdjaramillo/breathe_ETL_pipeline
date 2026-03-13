@@ -1,4 +1,7 @@
 import sqlite3
+import logging
+
+from utils.config import load_config
 
 
 def create_schema(db_path):
@@ -170,14 +173,20 @@ def create_schema(db_path):
         )
 
         conn.commit()
-        print(f"Base de datos '{db_path}' inicializada y verificada correctamente.")
+        logging.info(
+            "Base de datos '%s' inicializada y verificada correctamente.", db_path
+        )
 
     except sqlite3.Error as e:
-        print(f"Error crítico creando el esquema: {e}")
+        logging.error("Error crítico creando el esquema: %s", e)
     finally:
         if conn:
             conn.close()
 
 
 if __name__ == "__main__":
-    create_schema("clinical_data.db")
+    config = load_config()
+    db_path = (
+        config.get("db_path", "clinical_data.db") if config else "clinical_data.db"
+    )
+    create_schema(db_path)

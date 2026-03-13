@@ -1,19 +1,7 @@
 import pandas as pd
-from datetime import datetime
-import numpy as np
-from pathlib import Path
+import logging
 
-
-def normalize_date(date_val):
-    """Fuerza el formato YYYY-MM-DD."""
-    if pd.isna(date_val):
-        return None
-    try:
-        if isinstance(date_val, datetime):
-            return date_val.strftime("%Y-%m-%d")
-        return pd.to_datetime(date_val).strftime("%Y-%m-%d")
-    except Exception:
-        return None
+from utils.normalization import normalize_date
 
 
 def process_excel(filepath, file_hash):
@@ -23,8 +11,18 @@ def process_excel(filepath, file_hash):
     """
     try:
         xls = pd.ExcelFile(filepath)
-    except Exception as e:
-        print(f"    [ERROR CRÍTICO] Imposible leer el Excel {filepath.name}: {e}")
+    except (FileNotFoundError, OSError, ValueError) as e:
+        logging.error(
+            "    [ERROR CRÍTICO] Imposible leer el Excel %s: %s",
+            filepath.name,
+            e,
+        )
+        return []
+    except Exception:
+        logging.exception(
+            "    [ERROR CRÍTICO] Fallo inesperado leyendo el Excel %s",
+            filepath.name,
+        )
         return []
 
     if "entry" not in xls.sheet_names:
@@ -85,8 +83,10 @@ def process_excel(filepath, file_hash):
 
             # Validación de integridad: ¿El paciente tiene fecha de entrada registrada?
             if subject_id_str not in date_mapping:
-                print(
-                    f"    [WARN] ID {subject_id_str} en hoja '{sheet}' no tiene fecha en 'entry'. Se ignora."
+                logging.warning(
+                    "    [WARN] ID %s en hoja '%s' no tiene fecha en 'entry'. Se ignora.",
+                    subject_id_str,
+                    sheet,
                 )
                 continue
 

@@ -4,6 +4,8 @@
     "run_phase_3": true,
     "run_phase_4": true,
     "run_phase_5": true,
+    "db_path": "clinical_data.db",
+    "audit_csv_path": "data/registro_master.csv",
     "raw_ingestion_dir": "01_raw",
     "csv_mapping_path": "path/to/nhc_mapping.csv",
     "macro_dir": "macro_data",

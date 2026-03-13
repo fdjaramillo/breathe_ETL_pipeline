@@ -1,7 +1,6 @@
 import sqlite3
 import csv
 import hashlib
-import json
 import logging
 from pathlib import Path
 import importlib
@@ -14,6 +13,7 @@ import extractor_manual
 import extractor_master
 import extractor_questionnaires
 import loader
+from utils.config import load_config
 
 
 def get_file_hash(filepath):
@@ -28,39 +28,6 @@ def get_file_hash(filepath):
     """
     with open(filepath, "rb") as f:
         return hashlib.sha256(f.read()).hexdigest()
-
-
-def load_config(config_path="config.json"):
-    """
-    Carga la configuración desde un archivo JSON.
-    Convierte todas las rutas a objetos Path para compatibilidad multiplataforma.
-
-    Args:
-        config_path: Ruta del archivo de configuración
-
-    Returns:
-        Diccionario con las claves de configuración o None si falla
-    """
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        # Convertir rutas a objetos Path
-        for key, value in config.items():
-            if isinstance(value, str) and not key.startswith("run_"):
-                config[key] = Path(value)
-
-        print(f"Configuración cargada desde {config_path}")
-        return config
-    except FileNotFoundError:
-        print(f"Archivo de configuración no encontrado: {config_path}")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"Error al parsear JSON en {config_path}: {e}")
-        return None
-    except Exception as e:
-        print(f"Error inesperado al cargar configuración: {e}")
-        return None
 
 
 def load_nhc_mapping(csv_path):
@@ -95,8 +62,11 @@ def load_nhc_mapping(csv_path):
         )
         return nhc_mapping
 
-    except Exception as e:
-        logging.error(f"Error leyendo archivo de mapeo: {e}")
+    except (OSError, csv.Error) as error:
+        logging.error("Error leyendo archivo de mapeo %s: %s", csv_path, error)
+        return None
+    except Exception:
+        logging.exception("Error inesperado leyendo archivo de mapeo %s", csv_path)
         return None
 
 
@@ -277,11 +247,14 @@ def process_files(
                 )
                 error_count += 1
 
-        except Exception as e:
-            logging.error(
-                f"  → [EXCEPCIÓN] Error crítico procesando {filepath.name}: {e}"
+        except Exception as error:
+            logging.exception(
+                "  → [EXCEPCIÓN] Error crítico procesando %s",
+                filepath.name,
             )
-            audit_logger.log_to_master_csv(filepath, "ERROR", reason=f"Excepción: {e}")
+            audit_logger.log_to_master_csv(
+                filepath, "ERROR", reason=f"Excepción: {error}"
+            )
             error_count += 1
 
     return processed_count, skipped_count, error_count
@@ -317,15 +290,16 @@ def setup_logging(log_dir):
 
 def main():
     # 1. Cargar configuración
-    print("\n[INIT] Cargando configuración...")
+    logging.info("[INIT] Cargando configuración...")
     config = load_config()
     if not config:
-        print("[ERROR] No se pudo cargar la configuración. Abortando...")
+        logging.error("[ERROR] No se pudo cargar la configuración. Abortando...")
         return
 
     # 2. Configurar sistema de logging
     logs_dir = config.get("logs_dir", "logs")
     setup_logging(logs_dir)
+    audit_logger.configure(config.get("audit_csv_path"))
 
     # 3. Extraer flags de ejecución
     run_phase_0 = config.get("run_phase_0", True)
@@ -334,8 +308,8 @@ def main():
     run_phase_4 = config.get("run_phase_4", True)
     run_phase_5 = config.get("run_phase_5", True)
 
-    # 4. Nombre fijo de la base de datos
-    db_path = "clinical_data.db"
+    # 4. Ruta de la base de datos
+    db_path = config.get("db_path", Path("clinical_data.db"))
 
     # 5. Asegurar esquema de base de datos
     logging.info("Verificando esquema de base de datos...")
@@ -437,9 +411,10 @@ def main():
                                 )
                                 total_errors += 1
 
-                        except Exception as e:
-                            logging.error(
-                                f"  → [EXCEPCIÓN] Error crítico procesando {filepath.name}: {e}"
+                        except Exception:
+                            logging.exception(
+                                "  → [EXCEPCIÓN] Error crítico procesando %s",
+                                filepath.name,
                             )
                             total_errors += 1
         else:

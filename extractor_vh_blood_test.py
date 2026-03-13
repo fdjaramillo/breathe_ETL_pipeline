@@ -1,9 +1,11 @@
 # 1. DEPENDENCIAS Y CONSTANTES
 # Importar librerías (fitz, re, etc.)
 import fitz  # PyMuPDF
+import logging
 import re
-from datetime import datetime
 from pathlib import Path
+
+from utils.normalization import normalize_date, normalize_sex
 
 # Definir umbrales de tolerancia (EPSILON_Y = 4.0, etc.)
 EPSILON_Y = 4.0
@@ -274,17 +276,6 @@ class PDFExtractor:
             self.document.close()
 
 
-def _normalize_date(date_str: str):
-    if not date_str:
-        return None
-    for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
-
-
 def _extract_patient_metadata(doc) -> dict:
     page_text = doc[0].get_text("text") if len(doc) else ""
     nhc_match = NHC_RE.search(page_text)
@@ -295,14 +286,9 @@ def _extract_patient_metadata(doc) -> dict:
     if nhc_match:
         patient["nhc"] = nhc_match.group(1).strip()
     if birth_date_match:
-        patient["birth_date"] = _normalize_date(birth_date_match.group(1))
+        patient["birth_date"] = normalize_date(birth_date_match.group(1))
     if sex_match:
-        sex = sex_match.group(1).strip()
-        if sex == "M":
-            sex = "Hombre"
-        elif sex == "F":
-            sex = "Mujer"
-        patient["sex"] = sex
+        patient["sex"] = normalize_sex(sex_match.group(1).strip())
 
     return patient
 
@@ -314,7 +300,7 @@ def _extract_report_metadata(doc) -> dict:
     date_match = REPORT_DATE_RE.search(page_text)
 
     if date_match:
-        report_date = _normalize_date(date_match.group(1))
+        report_date = normalize_date(date_match.group(1))
         if report_date:
             report["report_date"] = report_date
 
@@ -373,7 +359,11 @@ def process_pdf(filepath, file_hash):
             "measurements": measurements,
         }
 
+    except (fitz.FileDataError, RuntimeError, ValueError) as error:
+        logging.error("Error procesando %s: %s", pdf_file.name, error)
+        return None
     except Exception:
+        logging.exception("Error inesperado procesando %s", pdf_file.name)
         return None
 
 
@@ -381,5 +371,5 @@ if __name__ == "__main__":
     # run extractor standalone para pruebas locales
     ruta = "/Users/davidjaramillo/Downloads/analiticahb03eosinofilosjun2025.pdf"
     resultado = process_pdf(ruta, "dummy_hash")
-    print(resultado.get("patient"))
-    print(resultado.get("report"))
+    logging.info("%s", resultado.get("patient"))
+    logging.info("%s", resultado.get("report"))

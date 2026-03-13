@@ -1,49 +1,7 @@
 import csv
-import re
-from datetime import datetime
+import logging
 
-
-def normalize_date(date_str):
-    """
-    Normaliza fechas en formatos mixtos a ISO (YYYY-MM-DD).
-    Retorna None si el formato es irreconocible.
-    """
-    if not date_str:
-        return None
-
-    date_str = date_str.strip()
-
-    # Intentar parsear múltiples formatos
-    for fmt in ("%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d", "%Y/%m/%d"):
-        try:
-            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-
-    # Si ningún formato coincide, retornar None
-    return None
-
-
-def normalize_sex(sex_str):
-    """
-    Normaliza el campo sexo a 'M', 'F' o None.
-    Acepta variantes en español e inglés (case-insensitive).
-    """
-    if not sex_str:
-        return None
-
-    sex_str = sex_str.strip().upper()
-
-    # Mapeo de variantes
-    male_variants = ["M", "MALE", "HOMBRE", "MASCULINO", "H"]
-    female_variants = ["F", "FEMALE", "MUJER", "FEMENINO"]
-
-    if sex_str in male_variants:
-        return "M"
-    elif sex_str in female_variants:
-        return "F"
-    else:
-        return None  # Valor irreconocible
+from utils.normalization import normalize_date, normalize_sex
 
 
 def process_master_csv(filepath, file_hash):
@@ -67,7 +25,9 @@ def process_master_csv(filepath, file_hash):
 
             if not subject_id:
                 # Log de advertencia: fila sin ID
-                print(f"    [WARN] Fila {row_num}: subject_id vacío, omitida.")
+                logging.warning(
+                    "    [WARN] Fila %s: subject_id vacío, omitida.", row_num
+                )
                 continue
 
             # Normalizar fecha de nacimiento
@@ -75,8 +35,10 @@ def process_master_csv(filepath, file_hash):
             normalized_birth = normalize_date(raw_birth)
 
             if raw_birth and not normalized_birth:
-                print(
-                    f"    [WARN] Paciente {subject_id}: formato de fecha inválido '{raw_birth}', se guardará como NULL."
+                logging.warning(
+                    "    [WARN] Paciente %s: formato de fecha inválido '%s', se guardará como NULL.",
+                    subject_id,
+                    raw_birth,
                 )
 
             # Normalizar sexo
@@ -84,8 +46,10 @@ def process_master_csv(filepath, file_hash):
             normalized_sex = normalize_sex(raw_sex)
 
             if raw_sex and not normalized_sex:
-                print(
-                    f"    [WARN] Paciente {subject_id}: valor de sexo irreconocible '{raw_sex}', se guardará como NULL."
+                logging.warning(
+                    "    [WARN] Paciente %s: valor de sexo irreconocible '%s', se guardará como NULL.",
+                    subject_id,
+                    raw_sex,
                 )
 
             results.append(

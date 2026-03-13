@@ -2,7 +2,7 @@
 audit_logger.py
 ---------------
 Provides a single function to append a row to the persistent audit CSV
-located at data/registro_master.csv.
+located at a configurable path.
 
 The CSV is purely for human-readable traceability and does NOT replace the
 SQLite processed_files idempotency mechanism.
@@ -33,9 +33,17 @@ _FIELDNAMES = [
 ]
 
 
+def configure(audit_csv_path=None):
+    """Configure the audit CSV destination at runtime."""
+    global _AUDIT_CSV
+
+    if audit_csv_path:
+        _AUDIT_CSV = Path(audit_csv_path)
+
+
 def log_to_master_csv(filepath, status, patient_id=None, reason=None):
     """
-    Appends a single audit row to data/registro_master.csv.
+    Appends a single audit row to the configured audit CSV.
 
     Creates the data/ directory and the CSV header on first use.
     Each row is flushed immediately so partial runs are always recoverable.
@@ -67,5 +75,5 @@ def log_to_master_csv(filepath, status, patient_id=None, reason=None):
                 }
             )
             f.flush()
-    except Exception as e:
-        logging.error(f"[AUDIT] No se pudo escribir en {_AUDIT_CSV}: {e}")
+    except Exception:
+        logging.exception("[AUDIT] No se pudo escribir en %s", _AUDIT_CSV)

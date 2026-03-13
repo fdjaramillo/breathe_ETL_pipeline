@@ -1,4 +1,5 @@
 import fitz
+import logging
 import re
 from datetime import datetime
 
@@ -209,11 +210,11 @@ def extract_measurements(text):
 def process_pdf(filepath, file_hash):
     """
     Función orquestadora que devuelve el objeto compatible con loader.py
-    
+
     Args:
         filepath: Ruta del archivo PDF
         file_hash: Hash SHA256 del archivo (calculado en main.py)
-        
+
     Retorna:
         Diccionario con los datos extraídos o None si falla.
     """
@@ -242,6 +243,9 @@ def process_pdf(filepath, file_hash):
 
         return full_data_object
 
-    except Exception as e:
-        print(f"Error procesando {filepath.name}: {e}")
+    except (fitz.FileDataError, RuntimeError, ValueError) as error:
+        logging.error("Error procesando %s: %s", filepath.name, error)
+        return None
+    except Exception:
+        logging.exception("Error inesperado procesando %s", filepath.name)
         return None
