@@ -20,6 +20,7 @@ __pycache__/
 
 # Jupyter Notebooks
 .ipynb_checkpoints/
+notebooks/
 
 # sqlite
 *.db
@@ -28,6 +29,10 @@ __pycache__/
 macro_data/
 manual_entry_data/
 master_csvs/
+questionnaires/
 
 # logs
 logs/
+
+# Rscripts
+Rscripts/
