@@ -4,6 +4,15 @@ import logging
 from utils.config import load_config
 
 
+def _ensure_column(cursor, table_name, column_name, column_definition):
+    cursor.execute(f"PRAGMA table_info({table_name})")
+    existing_columns = {row[1] for row in cursor.fetchall()}
+    if column_name not in existing_columns:
+        cursor.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
+
+
 def create_schema(db_path):
     try:
         # Conexión a la base de datos (se crea si no existe)
@@ -41,6 +50,7 @@ def create_schema(db_path):
                 source_filename TEXT,             -- Para auditoría
                 source_file_type TEXT,            -- Origen del dato (cap, hosp_mar, manual_csv, etc.)
                 extraction_date TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (patient_id) REFERENCES patients(patient_id) ON DELETE CASCADE
             );
         """
@@ -152,6 +162,31 @@ def create_schema(db_path):
             """
         )
 
+        # 10. TABLA AUDIT_CHANGES (Trazabilidad de cambios por reemplazo lógico)
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_changes (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_id INTEGER,
+                entity_type TEXT NOT NULL,
+                field_name TEXT NOT NULL,
+                previous_value TEXT,
+                new_value TEXT,
+                source_filename TEXT,
+                changed_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (report_id) REFERENCES pdf_reports(report_id) ON DELETE SET NULL
+            );
+            """
+        )
+
+        # Migraciones automáticas para instalaciones existentes
+        _ensure_column(
+            cursor,
+            "pdf_reports",
+            "updated_at",
+            "TEXT DEFAULT CURRENT_TIMESTAMP",
+        )
+
         # Creación de índices para optimizar búsquedas futuras
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_patient_subject_id ON patients(subject_id);"
@@ -163,6 +198,9 @@ def create_schema(db_path):
             "CREATE INDEX IF NOT EXISTS idx_report_type ON pdf_reports(report_type);"
         )
         cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_report_source_type ON pdf_reports(source_file_type);"
+        )
+        cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_measurement_param ON blood_measurements(parameter);"
         )
         cursor.execute(
@@ -171,6 +209,24 @@ def create_schema(db_path):
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_spirometry_phase ON spirometry_measurements(phase);"
         )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_audit_changes_report_id ON audit_changes(report_id);"
+        )
+
+        # Clave lógica solicitada: patient_id + test_date + test_type + source_hospital
+        # mapeada como: patient_id + report_date + report_type + source_file_type
+        try:
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_pdf_reports_logical_key
+                ON pdf_reports(patient_id, report_date, report_type, source_file_type);
+                """
+            )
+        except sqlite3.Error as error:
+            logging.warning(
+                "No se pudo crear índice único lógico de reportes (posibles duplicados históricos): %s",
+                error,
+            )
 
         conn.commit()
         logging.info(

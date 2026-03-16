@@ -1,5 +1,189 @@
 import sqlite3
 import logging
+import json
+
+
+def _normalize_key_part(value, default_value=""):
+    if value is None:
+        return default_value
+    normalized = str(value).strip()
+    return normalized if normalized else default_value
+
+
+def _json_dump(value):
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _log_change(
+    cursor,
+    report_id,
+    entity_type,
+    field_name,
+    previous_value,
+    new_value,
+    source_filename,
+):
+    previous_text = "" if previous_value is None else str(previous_value)
+    new_text = "" if new_value is None else str(new_value)
+
+    if previous_text == new_text:
+        return
+
+    cursor.execute(
+        """
+        INSERT INTO audit_changes (
+            report_id, entity_type, field_name, previous_value, new_value, source_filename
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            report_id,
+            entity_type,
+            field_name,
+            previous_text,
+            new_text,
+            source_filename,
+        ),
+    )
+
+
+def _fetch_existing_report(
+    cursor, patient_id, report_type, report_date, source_file_type
+):
+    cursor.execute(
+        """
+        SELECT
+            report_id,
+            lab_request_number,
+            episode_number,
+            report_date,
+            weight_kg,
+            height_cm,
+            source_filename,
+            source_file_type
+        FROM pdf_reports
+        WHERE patient_id = ?
+          AND report_type = ?
+          AND report_date = ?
+          AND source_file_type = ?
+        """,
+        (patient_id, report_type, report_date, source_file_type),
+    )
+    return cursor.fetchone()
+
+
+def _fetch_measurements(cursor, report_id, report_type):
+    if report_type == "blood_test":
+        cursor.execute(
+            """
+            SELECT section, subsection, parameter, value, unit, reference_range, value_in_bold
+            FROM blood_measurements
+            WHERE report_id = ?
+            ORDER BY measurement_id
+            """,
+            (report_id,),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "section": row[0],
+                "subsection": row[1],
+                "parameter": row[2],
+                "value": row[3],
+                "unit": row[4],
+                "reference_range": row[5],
+                "value_in_bold": row[6],
+            }
+            for row in rows
+        ]
+
+    if report_type == "spirometry":
+        cursor.execute(
+            """
+            SELECT parameter, unit, phase, value, theoretical, lin, z_score, perc_theoretical, perc_change
+            FROM spirometry_measurements
+            WHERE report_id = ?
+            ORDER BY measurement_id
+            """,
+            (report_id,),
+        )
+        rows = cursor.fetchall()
+        return [
+            {
+                "parameter": row[0],
+                "unit": row[1],
+                "phase": row[2],
+                "value": row[3],
+                "theoretical": row[4],
+                "lin": row[5],
+                "z_score": row[6],
+                "perc_theoretical": row[7],
+                "perc_change": row[8],
+            }
+            for row in rows
+        ]
+
+    return []
+
+
+def _replace_measurements(cursor, report_id, report_type, measurements):
+    if report_type == "blood_test":
+        cursor.execute(
+            "DELETE FROM blood_measurements WHERE report_id = ?", (report_id,)
+        )
+        measurements_to_insert = [
+            (
+                report_id,
+                m.get("section"),
+                m.get("subsection"),
+                m.get("parameter"),
+                m.get("value"),
+                m.get("unit"),
+                m.get("reference_range"),
+                m.get("value_in_bold"),
+            )
+            for m in measurements
+        ]
+        if measurements_to_insert:
+            cursor.executemany(
+                """
+                INSERT INTO blood_measurements (
+                    report_id, section, subsection, parameter,
+                    value, unit, reference_range, value_in_bold
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                measurements_to_insert,
+            )
+        return
+
+    if report_type == "spirometry":
+        cursor.execute(
+            "DELETE FROM spirometry_measurements WHERE report_id = ?", (report_id,)
+        )
+        measurements_to_insert = [
+            (
+                report_id,
+                m.get("parameter"),
+                m.get("unit"),
+                m.get("phase"),
+                m.get("value"),
+                m.get("theoretical"),
+                m.get("lin"),
+                m.get("z_score"),
+                m.get("perc_theoretical"),
+                m.get("perc_change"),
+            )
+            for m in measurements
+        ]
+        if measurements_to_insert:
+            cursor.executemany(
+                """
+                INSERT INTO spirometry_measurements (
+                    report_id, parameter, unit, phase, value,
+                    theoretical, lin, z_score, perc_theoretical, perc_change
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                measurements_to_insert,
+            )
 
 
 def mark_file_processed(file_hash, file_name, db_path):
@@ -286,94 +470,129 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
         report_data = data_object["report"]
         file_info = data_object["file_info"]
 
-        cursor.execute(
-            """
-            INSERT INTO pdf_reports (
-                patient_id, 
-                report_type,
-                lab_request_number, 
-                episode_number, 
-                report_date, 
-                weight_kg,
-                height_cm,
-                source_filename,
-                source_file_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                patient_id,
-                report_data.get("report_type"),
-                report_data.get("lab_request_number"),
-                report_data.get("episode_number"),
-                report_data.get("report_date"),
-                report_data.get("weight_kg"),
-                report_data.get("height_cm"),
-                file_info.get("filename"),
-                file_info.get("source_file_type"),
-            ),
+        report_type = _normalize_key_part(report_data.get("report_type"), "unknown")
+        report_date = _normalize_key_part(report_data.get("report_date"), "")
+        source_file_type = _normalize_key_part(
+            file_info.get("source_file_type"), "unknown"
+        )
+        source_filename = file_info.get("filename")
+
+        existing_report = _fetch_existing_report(
+            cursor,
+            patient_id,
+            report_type,
+            report_date,
+            source_file_type,
         )
 
-        report_id = cursor.lastrowid
+        if existing_report:
+            report_id = existing_report[0]
+            previous_report_values = {
+                "lab_request_number": existing_report[1],
+                "episode_number": existing_report[2],
+                "report_date": existing_report[3],
+                "weight_kg": existing_report[4],
+                "height_cm": existing_report[5],
+                "source_filename": existing_report[6],
+                "source_file_type": existing_report[7],
+            }
 
-        # 3. INSERCIÓN MASIVA DE MEDICIONES
-        measurements = data_object["measurements"]
-        report_type = report_data.get("report_type")
+            new_report_values = {
+                "lab_request_number": report_data.get("lab_request_number"),
+                "episode_number": report_data.get("episode_number"),
+                "report_date": report_date,
+                "weight_kg": report_data.get("weight_kg"),
+                "height_cm": report_data.get("height_cm"),
+                "source_filename": source_filename,
+                "source_file_type": source_file_type,
+            }
 
-        if report_type == "blood_test":
-            measurements_to_insert = []
-            for m in measurements:
-                measurements_to_insert.append(
-                    (
-                        report_id,
-                        m.get("section"),
-                        m.get("subsection"),
-                        m.get("parameter"),
-                        m.get("value"),
-                        m.get("unit"),
-                        m.get("reference_range"),
-                        m.get("value_in_bold"),
-                    )
-                )
-
-            if measurements_to_insert:
-                cursor.executemany(
-                    """
-                    INSERT INTO blood_measurements (
-                        report_id, section, subsection, parameter, 
-                        value, unit, reference_range, value_in_bold
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            cursor.execute(
+                """
+                UPDATE pdf_reports
+                SET lab_request_number = ?,
+                    episode_number = ?,
+                    report_date = ?,
+                    weight_kg = ?,
+                    height_cm = ?,
+                    source_filename = ?,
+                    source_file_type = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE report_id = ?
                 """,
-                    measurements_to_insert,
+                (
+                    new_report_values["lab_request_number"],
+                    new_report_values["episode_number"],
+                    new_report_values["report_date"],
+                    new_report_values["weight_kg"],
+                    new_report_values["height_cm"],
+                    new_report_values["source_filename"],
+                    new_report_values["source_file_type"],
+                    report_id,
+                ),
+            )
+
+            for field_name, old_value in previous_report_values.items():
+                _log_change(
+                    cursor,
+                    report_id,
+                    "pdf_report",
+                    field_name,
+                    old_value,
+                    new_report_values[field_name],
+                    source_filename,
                 )
 
-        elif report_type == "spirometry":
-            measurements_to_insert = []
-            for m in measurements:
-                measurements_to_insert.append(
-                    (
-                        report_id,
-                        m.get("parameter"),
-                        m.get("unit"),
-                        m.get("phase"),
-                        m.get("value"),
-                        m.get("theoretical"),
-                        m.get("lin"),
-                        m.get("z_score"),
-                        m.get("perc_theoretical"),
-                        m.get("perc_change"),
-                    )
+            previous_measurements = _fetch_measurements(cursor, report_id, report_type)
+            new_measurements = data_object.get("measurements", []) or []
+
+            if _json_dump(previous_measurements) != _json_dump(new_measurements):
+                _log_change(
+                    cursor,
+                    report_id,
+                    "measurements",
+                    report_type,
+                    _json_dump(previous_measurements),
+                    _json_dump(new_measurements),
+                    source_filename,
                 )
 
-            if measurements_to_insert:
-                cursor.executemany(
-                    """
-                    INSERT INTO spirometry_measurements (
-                        report_id, parameter, unit, phase, value, 
-                        theoretical, lin, z_score, perc_theoretical, perc_change
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            _replace_measurements(cursor, report_id, report_type, new_measurements)
+        else:
+            cursor.execute(
+                """
+                INSERT INTO pdf_reports (
+                    patient_id,
+                    report_type,
+                    lab_request_number,
+                    episode_number,
+                    report_date,
+                    weight_kg,
+                    height_cm,
+                    source_filename,
+                    source_file_type,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """,
-                    measurements_to_insert,
-                )
+                (
+                    patient_id,
+                    report_type,
+                    report_data.get("lab_request_number"),
+                    report_data.get("episode_number"),
+                    report_date,
+                    report_data.get("weight_kg"),
+                    report_data.get("height_cm"),
+                    source_filename,
+                    source_file_type,
+                ),
+            )
+            report_id = cursor.lastrowid
+            _replace_measurements(
+                cursor,
+                report_id,
+                report_type,
+                data_object.get("measurements", []) or [],
+            )
 
         # CONFIRMAR TRANSACCIÓN
         conn.commit()
