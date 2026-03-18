@@ -117,7 +117,12 @@ def _debug_measurements_if_available(extract_func, data_result):
 
 
 def process_files(
-    directory, db_path, extract_func=None, nhc_mapping=None, extension="pdf"
+    directory,
+    db_path,
+    extract_func=None,
+    source_file_type=None,
+    nhc_mapping=None,
+    extension="pdf",
 ):
     """
     Processes files recursively under *directory*.
@@ -129,6 +134,7 @@ def process_files(
         directory: Root directory to search recursively.
         db_path: SQLite database path.
         extract_func: Optional extraction callable.
+        source_file_type: Optional file type for dynamic dispatcher selection.
         nhc_mapping: Optional {nhc: subject_id} dict for PHI de-identification.
         extension: File extension to search for.
 
@@ -178,6 +184,7 @@ def process_files(
             selected_extract_func = extract_func
             if selected_extract_func is None:
                 file_type = dispatcher.identify_file_type(filepath)
+                source_file_type = file_type
                 selected_extract_func = dispatcher.FILE_TYPE_TO_EXTRACTOR.get(file_type)
 
                 if selected_extract_func is None:
@@ -199,6 +206,12 @@ def process_files(
                 f"  → Extrayendo datos con {selected_extract_func.__module__}..."
             )
             data_result = selected_extract_func(filepath, current_hash)
+
+            # add source_file_type to data_result for better traceability
+            if isinstance(data_result, dict):
+                if "file_info" not in data_result:
+                    data_result["file_info"] = {}
+                data_result["file_info"]["source_file_type"] = source_file_type
 
             if not data_result:
                 logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
@@ -436,6 +449,7 @@ def main():
                 raw_ingestion_dir,
                 db_path,
                 extract_func=None,
+                source_file_type=None,
                 nhc_mapping=nhc_mapping,
                 extension="pdf",
             )
@@ -461,6 +475,7 @@ def main():
                 macro_dir,
                 db_path,
                 extract_func=extractor_macro.process_csv,
+                source_file_type="macro_csv",
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -477,16 +492,18 @@ def main():
     # ========================================
     if run_phase_4:
         logging.info("=" * 100)
-        logging.info("FASE 4.1: ENTRADAS MANUALES - ANÁLISIS DE SANGRE")
+        logging.info("FASE 4: ENTRADAS MANUALES")
         logging.info("=" * 100)
 
         manual_entry_dir = config.get("manual_entry_dir")
         if manual_entry_dir:
+            # BLOOD ANALYSIS
             manual_blood_test_dir = Path(manual_entry_dir) / "blood_tests"
             processed, skipped, errors = process_files(
                 manual_blood_test_dir,
                 db_path,
                 extract_func=extractor_manual.process_manual_csv,
+                source_file_type=f"manual_entry_{manual_blood_test_dir.name}",
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -494,15 +511,13 @@ def main():
             total_skipped += skipped
             total_errors += errors
 
-            logging.info("=" * 100)
-            logging.info("FASE 4.2: ENTRADAS MANUALES - ESPIROMETRÍA")
-            logging.info("=" * 100)
-
+            # SPIROMETRY
             manual_spirometry_dir = Path(manual_entry_dir) / "spirometry"
             processed, skipped, errors = process_files(
                 manual_spirometry_dir,
                 db_path,
                 extract_func=extractor_manual.process_manual_csv,
+                source_file_type=f"manual_entry_{manual_spirometry_dir.name}",
                 nhc_mapping=None,
                 extension="csv",
             )
@@ -528,6 +543,7 @@ def main():
                 questionnaires_dir,
                 db_path,
                 extract_func=extractor_questionnaires.process_excel,
+                source_file_type="questionnaires_excel",
                 nhc_mapping=None,
                 extension="xlsx",
             )
