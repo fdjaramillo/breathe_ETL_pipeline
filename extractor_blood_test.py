@@ -1,7 +1,16 @@
 import fitz  # PyMuPDF
 import logging
+import re
 
 from utils.normalization import normalize_date, normalize_sex
+
+# Compilar expresiones regulares
+NHC_RE = re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)")
+BIRTH_DATE_RE = re.compile(r"Fecha nac./Data naix.\s*:\s*(\d{2}/\d{2}/\d{4})")
+SEX_RE = re.compile(r"Sexo/Sexe\s*:\s*([A-Za-z])")
+
+LAB_REQUEST_NUMBER_RE = re.compile(r"N\. Sol·licitud Lab\.\s*:\s*([0-9]+)")
+REPORT_DATE_RE = re.compile(r"Data recepció mostra\s*:\s*(\d{2}/\d{2}/\d{4})")
 
 
 def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
@@ -37,49 +46,33 @@ def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
     logging.info("------------------------------------------------")
 
 
-def extract_patient_info(doc):
-    page = doc[0]
-    blocks = page.get_text("blocks", sort=True)[1:3]
+def _extract_report_metadata(doc) -> dict:
+    page_text = doc[0].get_text("text") if len(doc) else ""
+    # Patient info
+    nhc_match = NHC_RE.search(page_text)
+    birth_date_match = BIRTH_DATE_RE.search(page_text)
+    sex_match = SEX_RE.search(page_text)
 
     patient_info = {}
+    if nhc_match:
+        patient_info["nhc"] = nhc_match.group(1).strip()
+    if birth_date_match:
+        patient_info["birth_date"] = normalize_date(birth_date_match.group(1))
+    if sex_match:
+        patient_info["sex"] = normalize_sex(sex_match.group(1).strip())
 
-    # Block 1: name and NHC
-    text_block_1 = blocks[0][4].splitlines()
-
-    patient_info["nhc"] = text_block_1[1].replace("NHC:", "").strip()
-    patient_info["name"] = text_block_1[0].strip()
-
-    # Block 2:
-    text_block_2 = blocks[1][4].splitlines()
-
-    for line in text_block_2:
-        if "Data naix." in line:
-            date = line.split(":")[-1].strip()
-            patient_info["birth_date"] = normalize_date(date)
-        elif "Sexo/Sexe" in line:
-            patient_info["sex"] = normalize_sex(line.split(":")[-1].strip())
-
-    return patient_info
-
-
-def extract_report_info(doc):
-    page = doc[0]
-    blocks = page.get_text("blocks", sort=True)[1:3]
+    # Report info
+    lab_request_match = LAB_REQUEST_NUMBER_RE.search(page_text)
+    report_date_match = REPORT_DATE_RE.search(page_text)
 
     report_info = {"report_type": "blood_test"}
 
-    # Block 2:
-    text_block_2 = blocks[1][4].splitlines()
-    for line in text_block_2:
-        if "N. Sol·licitud Lab." in line:
-            report_info["lab_request_number"] = line.split(":")[-1].strip()
-        elif "Nºepis" in line:
-            report_info["episode_number"] = line.split(":")[-1].strip()
-        elif "Data recepció mostra" in line:
-            date = line.split(",")[0].replace("Data recepció mostra:", "").strip()
-            report_info["report_date"] = normalize_date(date)
+    if lab_request_match:
+        report_info["lab_request_number"] = lab_request_match.group(1).strip()
+    if report_date_match:
+        report_info["report_date"] = normalize_date(report_date_match.group(1))
 
-    return report_info
+    return patient_info, report_info
 
 
 def extract_measurements(doc):
@@ -188,8 +181,7 @@ def process_pdf(filepath, file_hash):
         doc = fitz.open(filepath)
 
         # Paso 1: Metadatos
-        patient = extract_patient_info(doc)
-        report = extract_report_info(doc)
+        patient_info, report_info = _extract_report_metadata(doc)
 
         # Paso 2: Resultados con contexto
         measurements = extract_measurements(doc)
@@ -205,8 +197,8 @@ def process_pdf(filepath, file_hash):
         # Paso 4: Empaquetar todo en el formato esperado por loader.py
         full_data_object = {
             "file_info": file_info,
-            "patient": patient,
-            "report": report,
+            "patient": patient_info,
+            "report": report_info,
             "measurements": measurements,
         }
 
