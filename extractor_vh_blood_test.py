@@ -3,7 +3,6 @@
 import fitz  # PyMuPDF
 import logging
 import re
-from pathlib import Path
 
 from utils.normalization import normalize_date, normalize_sex
 
@@ -19,8 +18,10 @@ WORD_RE = re.compile(r"[A-Za-zÀ-ÿ]+")
 LOWERCASE_CONNECTORS = {"i", "y", "e", "de", "del", "la", "el", "d"}
 NHC_RE = re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)")
 BIRTH_DATE_RE = re.compile(r"Naixement\s*:\s*(\d{2}/\d{2}/\d{4})")
-REPORT_DATE_RE = re.compile(r"Recepció\s*:\s*(\d{1,2}/\d{1,2}/\d{2})")
 SEX_RE = re.compile(r"Sexe\s*:\s*([A-Za-z])")
+
+REQUEST_NUMBER_RE = re.compile(r"Petició\s*:\s*([0-9]+)")
+REPORT_DATE_RE = re.compile(r"Recepció\s*:\s*(\d{1,2}/\d{1,2}/\d{2})")
 
 
 def is_heading_upper_like(text: str) -> bool:
@@ -44,7 +45,7 @@ def is_heading_upper_like(text: str) -> bool:
     return has_upper_word
 
 
-# 2. FUNCIONES DE EXTRACCIÓN Y GEOMETRÍA (Puras)
+# 2. FUNCIONES DE EXTRACCIÓN Y GEOMETRÍA
 def get_page_spans(page) -> list:
     """Extrae todos los spans de la página usando get_text('dict')."""
     spans = []
@@ -98,7 +99,7 @@ def cluster_spans_into_lines(spans: list, epsilon: float) -> list[list]:
     return lines
 
 
-# 3. FUNCIONES DE CLASIFICACIÓN Y PARSEO (Reglas de negocio)
+# 3. FUNCIONES DE CLASIFICACIÓN Y PARSEO
 def classify_line(line_spans: list, page_width: float) -> str:
     """
     Evalúa coordenadas, fuentes y contenido.
@@ -283,35 +284,33 @@ def extract_measurement_hierarchy(filepath) -> dict:
     finally:
         document.close()
 
-def _extract_patient_metadata(doc) -> dict:
+
+def _extract_report_metadata(doc) -> dict:
     page_text = doc[0].get_text("text") if len(doc) else ""
+    # Patient info
     nhc_match = NHC_RE.search(page_text)
     birth_date_match = BIRTH_DATE_RE.search(page_text)
     sex_match = SEX_RE.search(page_text)
 
-    patient = {}
+    patient_info = {}
     if nhc_match:
-        patient["nhc"] = nhc_match.group(1).strip()
+        patient_info["nhc"] = nhc_match.group(1).strip()
     if birth_date_match:
-        patient["birth_date"] = normalize_date(birth_date_match.group(1))
+        patient_info["birth_date"] = normalize_date(birth_date_match.group(1))
     if sex_match:
-        patient["sex"] = normalize_sex(sex_match.group(1).strip())
+        patient_info["sex"] = normalize_sex(sex_match.group(1).strip())
 
-    return patient
+    # Report info
+    request_match = REQUEST_NUMBER_RE.search(page_text)
+    report_date_match = REPORT_DATE_RE.search(page_text)
 
+    report_info = {"report_type": "blood_test"}
+    if request_match:
+        report_info["lab_request_number"] = request_match.group(1).strip()
+    if report_date_match:
+        report_info["report_date"] = normalize_date(report_date_match.group(1))
 
-def _extract_report_metadata(doc) -> dict:
-    page_text = doc[0].get_text("text") if len(doc) else ""
-
-    report = {"report_type": "blood_test"}
-    date_match = REPORT_DATE_RE.search(page_text)
-
-    if date_match:
-        report_date = normalize_date(date_match.group(1))
-        if report_date:
-            report["report_date"] = report_date
-
-    return report
+    return patient_info, report_info
 
 
 def _flatten_hierarchy(extracted_hierarchy: dict) -> list:
@@ -327,7 +326,7 @@ def _flatten_hierarchy(extracted_hierarchy: dict) -> list:
                         "value": row.get("value"),
                         "unit": row.get("unit"),
                         "reference_range": row.get("reference_range"),
-                        "value_in_bold": 1 if row.get("flag") else 0,
+                        "value_in_bold": True if row.get("flag") else False,
                     }
                 )
     return measurements
@@ -339,44 +338,30 @@ def process_pdf(filepath, file_hash):
     al formato esperado por loader.save_to_db().
     """
     try:
-        pdf_file = Path(filepath)
         # Extraer mediciones con el motor geométrico.
-        hierarchy = extract_measurement_hierarchy(pdf_file)
+        hierarchy = extract_measurement_hierarchy(filepath)
         measurements = _flatten_hierarchy(hierarchy)
 
         if not measurements:
             return None
 
         # Reabrir solo para metadatos ligeros de cabecera.
-        doc = fitz.open(pdf_file)
+        doc = fitz.open(filepath)
         try:
-            patient = _extract_patient_metadata(doc)
-            report = _extract_report_metadata(doc)
+            patient_info, report_info = _extract_report_metadata(doc)
         finally:
             doc.close()
 
         return {
-            "file_info": {
-                "filename": pdf_file.name,
-                "file_hash": file_hash,
-                "source_file_type": "vh",
-            },
-            "patient": patient,
-            "report": report,
+            "file_info": {"filename": filepath.name, "file_hash": file_hash},
+            "patient": patient_info,
+            "report": report_info,
             "measurements": measurements,
         }
 
     except (fitz.FileDataError, RuntimeError, ValueError) as error:
-        logging.error("Error procesando %s: %s", pdf_file.name, error)
+        logging.error("Error procesando %s: %s", filepath.name, error)
         return None
     except Exception:
-        logging.exception("Error inesperado procesando %s", pdf_file.name)
+        logging.exception("Error inesperado procesando %s", filepath.name)
         return None
-
-
-if __name__ == "__main__":
-    # run extractor standalone para pruebas locales
-    ruta = "/Users/davidjaramillo/Downloads/analiticahb03eosinofilosjun2025.pdf"
-    resultado = process_pdf(ruta, "dummy_hash")
-    logging.info("%s", resultado.get("patient"))
-    logging.info("%s", resultado.get("report"))
