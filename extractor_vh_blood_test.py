@@ -214,67 +214,74 @@ def parse_data_row(line_spans: list) -> dict:
     }
 
 
-# 4. CLASE CONTROLADORA (Máquina de estados)
-class PDFExtractor:
-    def __init__(self, filepath: str):
-        self.filepath = filepath
-        self.document = None
-        self.data = {}  # Diccionario jerárquico de salida
+def _update_extraction_state(
+    current_section, current_subsection, line_type: str, line_spans: list
+):
+    """Actualiza current_section o current_subsection si la línea es un encabezado."""
+    text = " ".join(s.get("text", "").strip() for s in line_spans).strip()
+    if not text:
+        return current_section, current_subsection
 
-        # Variables de estado
-        self.current_section = "General"
-        self.current_subsection = "Default"
+    if line_type == "TITULO":
+        return text, None
+    elif line_type == "SUBTITULO":
+        return current_section, text
 
-    def _update_state(self, line_type: str, line_spans: list):
-        """Actualiza current_section o current_subsection si la línea es un encabezado."""
-        text = " ".join(s.get("text", "").strip() for s in line_spans).strip()
-        if not text:
-            return
+    return current_section, current_subsection
 
-        if line_type == "TITULO":
-            self.current_section = text
-            self.current_subsection = "Default"
-        elif line_type == "SUBTITULO":
-            self.current_subsection = text
 
-    def _insert_data(self, row_data: dict):
-        """Inserta la fila procesada en self.data respetando el estado actual."""
-        self.data.setdefault(self.current_section, {})
-        self.data[self.current_section].setdefault(self.current_subsection, [])
-        self.data[self.current_section][self.current_subsection].append(row_data)
+def _insert_row_data(data: dict, current_section, current_subsection, row_data: dict):
+    """Inserta la fila procesada en la salida respetando el estado actual."""
+    data.setdefault(current_section, {})
+    data[current_section].setdefault(current_subsection, [])
+    data[current_section][current_subsection].append(row_data)
 
-    def run(self) -> dict:
-        """
-        Método principal:
-        1. Abre el documento.
-        2. Itera por cada página.
-        3. Llama a get_page_spans -> cluster_spans_into_lines.
-        4. Itera sobre las líneas lógicas:
-            a. classify_line
-            b. Si es encabezado: _update_state
-            c. Si son datos: parse_data_row -> _insert_data
-        5. Retorna self.data.
-        """
-        self.document = fitz.open(self.filepath)
-        try:
-            for page in self.document:
-                spans = get_page_spans(page)
-                lines = cluster_spans_into_lines(spans, EPSILON_Y)
 
-                for line_spans in lines:
-                    line_type = classify_line(line_spans, page.rect.width)
+def extract_measurement_hierarchy(filepath) -> dict:
+    """
+    Método principal:
+    1. Abre el documento.
+    2. Itera por cada página.
+    3. Llama a get_page_spans -> cluster_spans_into_lines.
+    4. Itera sobre las líneas lógicas:
+        a. classify_line
+        b. Si es encabezado: _update_extraction_state
+        c. Si son datos: parse_data_row -> _insert_row_data
+    5. Retorna la jerarquía extraída.
+    """
+    data = {}
+    current_section = None
+    current_subsection = None
+    document = fitz.open(filepath)
 
-                    if line_type in ("TITULO", "SUBTITULO"):
-                        self._update_state(line_type, line_spans)
-                    elif line_type == "DATOS":
-                        row_data = parse_data_row(line_spans)
-                        if row_data:
-                            self._insert_data(row_data)
+    try:
+        for page in document:
+            spans = get_page_spans(page)
+            lines = cluster_spans_into_lines(spans, EPSILON_Y)
 
-            return self.data
-        finally:
-            self.document.close()
+            for line_spans in lines:
+                line_type = classify_line(line_spans, page.rect.width)
 
+                if line_type in ("TITULO", "SUBTITULO"):
+                    current_section, current_subsection = _update_extraction_state(
+                        current_section,
+                        current_subsection,
+                        line_type,
+                        line_spans,
+                    )
+                elif line_type == "DATOS":
+                    row_data = parse_data_row(line_spans)
+                    if row_data:
+                        _insert_row_data(
+                            data,
+                            current_section,
+                            current_subsection,
+                            row_data,
+                        )
+
+        return data
+    finally:
+        document.close()
 
 def _extract_patient_metadata(doc) -> dict:
     page_text = doc[0].get_text("text") if len(doc) else ""
@@ -334,7 +341,7 @@ def process_pdf(filepath, file_hash):
     try:
         pdf_file = Path(filepath)
         # Extraer mediciones con el motor geométrico.
-        hierarchy = PDFExtractor(pdf_file).run()
+        hierarchy = extract_measurement_hierarchy(pdf_file)
         measurements = _flatten_hierarchy(hierarchy)
 
         if not measurements:
