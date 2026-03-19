@@ -4,6 +4,7 @@ import hashlib
 import logging
 from pathlib import Path
 import importlib
+from datetime import datetime
 
 import schema
 import dispatcher
@@ -70,22 +71,18 @@ def load_nhc_mapping(csv_path):
         return None
 
 
-def is_file_processed(file_hash, db_path):
+def get_processed_hashes(db_path):
     """
-    Consulta la base de datos para ver si este hash ya existe.
-    Retorna True si el archivo ya fue procesado anteriormente.
+    Recupera todos los hashes de archivos ya procesados en un set.
     """
     try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM processed_files WHERE file_hash = ?", (file_hash,)
-        )
-        result = cursor.fetchone()
-        conn.close()
-        return result is not None
-    except sqlite3.Error:
-        return False
+        with sqlite3.connect(db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT file_hash FROM processed_files")
+            return {row[0] for row in cursor.fetchall() if row and row[0]}
+    except sqlite3.Error as error:
+        logging.error("Error obteniendo hashes procesados: %s", error)
+        return set()
 
 
 def _resolve_patient_id(block, nhc_mapping):
@@ -123,6 +120,7 @@ def process_files(
     source_file_type=None,
     nhc_mapping=None,
     extension="pdf",
+    processed_hashes=None,
 ):
     """
     Processes files recursively under *directory*.
@@ -137,6 +135,7 @@ def process_files(
         source_file_type: Optional file type for dynamic dispatcher selection.
         nhc_mapping: Optional {nhc: subject_id} dict for PHI de-identification.
         extension: File extension to search for.
+        processed_hashes: Optional set with preloaded processed hashes.
 
     Returns:
         Tuple (processed_count, skipped_count, error_count).
@@ -163,6 +162,8 @@ def process_files(
     processed_count = 0
     skipped_count = 0
     error_count = 0
+    if processed_hashes is None:
+        processed_hashes = get_processed_hashes(db_path)
 
     for index, filepath in enumerate(target_files, start=1):
         logging.info(f"[{index}/{total_files}] Procesando: {filepath}")
@@ -170,7 +171,7 @@ def process_files(
         try:
             # A. Hash + idempotencia
             current_hash = get_file_hash(filepath)
-            if is_file_processed(current_hash, db_path):
+            if current_hash in processed_hashes:
                 logging.info(
                     "  → [SKIP] Archivo ya procesado previamente (Hash coincide)."
                 )
@@ -249,6 +250,7 @@ def process_files(
 
             if all_blocks_success:
                 loader.mark_file_processed(current_hash, filepath.name, db_path)
+                processed_hashes.add(current_hash)
                 audit_logger.log_to_master_csv(
                     filepath, "PROCESSED", patient_id=patient_id
                 )
@@ -266,7 +268,7 @@ def process_files(
                 )
                 error_count += 1
 
-        except Exception as error:
+        except (OSError, sqlite3.Error, csv.Error, FileNotFoundError) as error:
             logging.exception(
                 "  → [EXCEPCIÓN] Error crítico procesando %s",
                 filepath.name,
@@ -279,17 +281,115 @@ def process_files(
     return processed_count, skipped_count, error_count
 
 
-def setup_logging(log_dir):
+def process_files_master(master_csvs, db_path):
+    """
+    Procesa archivos maestros CSV para conciliación de identidades.
+
+    Args:
+        master_csvs: Directorio con archivos CSV maestros.
+        db_path: Ruta de la base de datos.
+
+    Returns:
+        Tuple (processed_count, skipped_count, error_count).
+    """
+    if not master_csvs:
+        logging.warning("master_csvs no definido en config.json")
+        return 0, 0, 0
+
+    master_csvs_dir = Path(master_csvs)
+    if not master_csvs_dir.is_dir():
+        logging.warning(f"Directorio maestro no encontrado: {master_csvs_dir}")
+        return 0, 0, 0
+
+    csv_files = list(master_csvs_dir.glob("*.csv"))
+    if not csv_files:
+        logging.info(f"No se encontraron archivos CSV en {master_csvs_dir}")
+        return 0, 0, 0
+
+    processed_count = 0
+    skipped_count = 0
+    error_count = 0
+    processed_hashes = get_processed_hashes(db_path)
+
+    for index, filepath in enumerate(csv_files, start=1):
+        logging.info(f"[{index}/{len(csv_files)}] Procesando: {filepath.name}")
+
+        try:
+            # Calcular hash
+            current_hash = get_file_hash(filepath)
+
+            # Verificar idempotencia
+            if current_hash in processed_hashes:
+                logging.info(
+                    "  → [SKIP] Archivo ya procesado previamente (Hash coincide)."
+                )
+                skipped_count += 1
+                continue
+
+            # Extracción
+            logging.info("  → Extrayendo datos maestros...")
+            patient_records = extractor_master.process_master_csv(
+                filepath, current_hash
+            )
+
+            if not patient_records:
+                logging.error("  → [ERROR] No se extrajeron registros de pacientes.")
+                error_count += 1
+                continue
+
+            # Procesamiento registro por registro
+            success_count = 0
+            failed_count = 0
+
+            for patient in patient_records:
+                success = loader.upsert_patient_details(patient, db_path)
+                if success:
+                    success_count += 1
+                else:
+                    failed_count += 1
+
+            # Marcar archivo como procesado solo si no hubo errores críticos
+            if failed_count == 0:
+                loader.mark_file_processed(current_hash, filepath.name, db_path)
+                processed_hashes.add(current_hash)
+                logging.info(
+                    f"  → [OK] {success_count} pacientes procesados correctamente."
+                )
+                processed_count += 1
+            else:
+                logging.warning(
+                    f"  → [PARCIAL] {success_count} OK, {failed_count} errores. No se marca como procesado."
+                )
+                error_count += 1
+
+        except (OSError, sqlite3.Error, csv.Error, FileNotFoundError):
+            logging.exception(
+                "  → [EXCEPCIÓN] Error crítico procesando %s",
+                filepath.name,
+            )
+            error_count += 1
+
+    return processed_count, skipped_count, error_count
+
+
+def setup_logging(use_timestamp=True):
     """
     Configura el sistema de logging del pipeline.
 
     Args:
-        log_dir: Directorio donde se almacenarán los logs
+        use_timestamp: Si True, crea un archivo por ejecución con timestamp.
+
+    Returns:
+        Path del archivo de log.
     """
-    log_dir = Path(log_dir)
+    log_dir = Path("logs")
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    log_file = log_dir / "pipeline_activity.log"
+    if use_timestamp:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"pipeline_activity_{timestamp}.log"
+    else:
+        log_file = log_dir / "pipeline_activity.log"
 
     # Configurar formato
     logging.basicConfig(
@@ -306,40 +406,43 @@ def setup_logging(log_dir):
     logging.info("INICIANDO PIPELINE DE EXTRACCIÓN CLÍNICA")
     logging.info("=" * 100)
 
+    return log_file
+
 
 def main():
-    # 1. Cargar configuración
-    logging.info("[INIT] Cargando configuración...")
+    # 1. Configurar sistema de logging
+    log_file = setup_logging(use_timestamp=True)
+
+    # 2. Cargar configuración
     config = load_config()
     if not config:
         logging.error("[ERROR] No se pudo cargar la configuración. Abortando...")
         return
+    logging.info("[INIT] Configuración cargada correctamente")
 
-    # 2. Configurar sistema de logging
-    logs_dir = config.get("logs_dir", "logs")
-    setup_logging(logs_dir)
+    # 3. Configurar auditoría
     audit_logger.configure(config.get("audit_csv_path"))
 
-    # 3. Extraer flags de ejecución
+    # 4. Extraer flags de ejecución
     run_phase_0 = config.get("run_phase_0", True)
     run_phase_1 = config.get("run_phase_1", True)
     run_phase_3 = config.get("run_phase_3", True)
     run_phase_4 = config.get("run_phase_4", True)
     run_phase_5 = config.get("run_phase_5", True)
 
-    # 4. Ruta de la base de datos
+    # 5. Ruta de la base de datos
     db_path = config.get("db_path", Path("clinical_data.db"))
 
-    # 5. Asegurar esquema de base de datos
+    # 6. Asegurar esquema de base de datos
     logging.info("Verificando esquema de base de datos...")
     schema.create_schema(db_path)
 
-    # 6. Contadores globales
+    # 7. Contadores globales
     total_processed = 0
     total_skipped = 0
     total_errors = 0
 
-    # 7. Cargar mapeo NHC (SOLO si la fase PDF unificada está activa)
+    # 8. Cargar mapeo NHC (SOLO si la fase PDF unificada está activa)
     nhc_mapping = None
     if run_phase_1:
         csv_mapping_path = config.get("csv_mapping_path")
@@ -360,84 +463,13 @@ def main():
         logging.info("=" * 100)
         logging.info("FASE 0: CONCILIACIÓN DE IDENTIDADES (MASTER CSV)")
         logging.info("=" * 100)
-
-        master_csvs = config.get("master_csvs")
-        if master_csvs:
-            master_csvs_dir = Path(master_csvs)
-            if not master_csvs_dir.is_dir():
-                logging.warning(f"Directorio maestro no encontrado: {master_csvs_dir}")
-            else:
-                csv_files = list(master_csvs_dir.glob("*.csv"))
-
-                if not csv_files:
-                    logging.info(f"No se encontraron archivos CSV en {master_csvs_dir}")
-                else:
-                    for index, filepath in enumerate(csv_files, start=1):
-                        logging.info(
-                            f"[{index}/{len(csv_files)}] Procesando: {filepath.name}"
-                        )
-
-                        try:
-                            # Calcular hash
-                            current_hash = get_file_hash(filepath)
-
-                            # Verificar idempotencia
-                            if is_file_processed(current_hash, db_path):
-                                logging.info(
-                                    "  → [SKIP] Archivo ya procesado previamente (Hash coincide)."
-                                )
-                                total_skipped += 1
-                                continue
-
-                            # Extracción
-                            logging.info("  → Extrayendo datos maestros...")
-                            patient_records = extractor_master.process_master_csv(
-                                filepath, current_hash
-                            )
-
-                            if not patient_records:
-                                logging.error(
-                                    "  → [ERROR] No se extrajeron registros de pacientes."
-                                )
-                                total_errors += 1
-                                continue
-
-                            # Procesamiento registro por registro
-                            success_count = 0
-                            error_count = 0
-
-                            for patient in patient_records:
-                                success = loader.upsert_patient_details(
-                                    patient, db_path
-                                )
-                                if success:
-                                    success_count += 1
-                                else:
-                                    error_count += 1
-
-                            # Marcar archivo como procesado solo si no hubo errores críticos
-                            if error_count == 0:
-                                loader.mark_file_processed(
-                                    current_hash, filepath.name, db_path
-                                )
-                                logging.info(
-                                    f"  → [OK] {success_count} pacientes procesados correctamente."
-                                )
-                                total_processed += 1
-                            else:
-                                logging.warning(
-                                    f"  → [PARCIAL] {success_count} OK, {error_count} errores. No se marca como procesado."
-                                )
-                                total_errors += 1
-
-                        except Exception:
-                            logging.exception(
-                                "  → [EXCEPCIÓN] Error crítico procesando %s",
-                                filepath.name,
-                            )
-                            total_errors += 1
-        else:
-            logging.warning("master_csvs no definido en config.json")
+        processed, skipped, errors = process_files_master(
+            config.get("master_csvs"),
+            db_path,
+        )
+        total_processed += processed
+        total_skipped += skipped
+        total_errors += errors
     else:
         logging.info("FASE 0 desactivada (run_phase_0=False)")
 
@@ -451,6 +483,7 @@ def main():
 
         raw_ingestion_dir = config.get("raw_ingestion_dir")
         if raw_ingestion_dir:
+            processed_hashes = get_processed_hashes(db_path)
             processed, skipped, errors = process_files(
                 raw_ingestion_dir,
                 db_path,
@@ -458,6 +491,7 @@ def main():
                 source_file_type=None,
                 nhc_mapping=nhc_mapping,
                 extension="pdf",
+                processed_hashes=processed_hashes,
             )
             total_processed += processed
             total_skipped += skipped
@@ -571,7 +605,7 @@ def main():
     logging.info(f"Omitidos (Skip):  {total_skipped}")
     logging.info(f"Errores:          {total_errors}")
     logging.info(f"Base de datos:    {db_path}")
-    logging.info(f"Logs guardados en: {logs_dir}/pipeline_activity.log")
+    logging.info(f"Logs guardados en: {log_file}")
     logging.info("=" * 100)
 
 
