@@ -201,11 +201,17 @@ def process_files(
                     f"  → [DISPATCHER] Extractor seleccionado: {selected_extract_func.__module__}"
                 )
 
-            # C. Extracción
-            logging.info(
-                f"  → Extrayendo datos con {selected_extract_func.__module__}..."
-            )
-            data_result = selected_extract_func(filepath, current_hash)
+                # C. Extracción para blood_test o spirometry
+                data_result = selected_extract_func(
+                    filepath, current_hash, source_file_type=source_file_type
+                )
+
+            if not data_result:
+                # C. Extracción general
+                logging.info(
+                    f"  → Extrayendo datos con {selected_extract_func.__module__}..."
+                )
+                data_result = selected_extract_func(filepath, current_hash)
 
             # add source_file_type to data_result for better traceability
             if isinstance(data_result, dict):
