@@ -1,16 +1,7 @@
 import fitz  # PyMuPDF
 import logging
-import re
 
-from utils.normalization import normalize_date, normalize_sex
-
-# Compilar expresiones regulares
-NHC_RE = re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)")
-BIRTH_DATE_RE = re.compile(r"Fecha nac./Data naix.\s*:\s*(\d{2}/\d{2}/\d{4})")
-SEX_RE = re.compile(r"Sexo/Sexe\s*:\s*([A-Za-z])")
-
-LAB_REQUEST_NUMBER_RE = re.compile(r"N\. Sol·licitud Lab\.\s*:\s*([0-9]+)")
-REPORT_DATE_RE = re.compile(r"Data recepció mostra\s*:\s*(\d{2}/\d{2}/\d{4})")
+from utils.base_extractor import get_report_metadata
 
 
 def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
@@ -44,35 +35,6 @@ def debug_measurements(data_object, target_section="AL·LÈRGENS ESPECÍFICS"):
             target_section,
         )
     logging.info("------------------------------------------------")
-
-
-def _extract_report_metadata(doc) -> dict:
-    page_text = doc[0].get_text("text") if len(doc) else ""
-    # Patient info
-    nhc_match = NHC_RE.search(page_text)
-    birth_date_match = BIRTH_DATE_RE.search(page_text)
-    sex_match = SEX_RE.search(page_text)
-
-    patient_info = {}
-    if nhc_match:
-        patient_info["nhc"] = nhc_match.group(1).strip()
-    if birth_date_match:
-        patient_info["birth_date"] = normalize_date(birth_date_match.group(1))
-    if sex_match:
-        patient_info["sex"] = normalize_sex(sex_match.group(1).strip())
-
-    # Report info
-    lab_request_match = LAB_REQUEST_NUMBER_RE.search(page_text)
-    report_date_match = REPORT_DATE_RE.search(page_text)
-
-    report_info = {"report_type": "blood_test"}
-
-    if lab_request_match:
-        report_info["lab_request_number"] = lab_request_match.group(1).strip()
-    if report_date_match:
-        report_info["report_date"] = normalize_date(report_date_match.group(1))
-
-    return patient_info, report_info
 
 
 def extract_measurements(doc):
@@ -166,7 +128,7 @@ def extract_measurements(doc):
     return measurements_list
 
 
-def process_pdf(filepath, file_hash):
+def process_pdf(filepath, file_hash, source_file_type=None):
     """
     Procesa un solo archivo de principio a fin.
 
@@ -181,7 +143,11 @@ def process_pdf(filepath, file_hash):
         doc = fitz.open(filepath)
 
         # Paso 1: Metadatos
-        patient_info, report_info = _extract_report_metadata(doc)
+        page_text = doc[0].get_text("text") if len(doc) else ""
+        patient_info, report_info = get_report_metadata(
+            page_text,
+            source_file_type or "clinic_blood_test",
+        )
 
         # Paso 2: Resultados con contexto
         measurements = extract_measurements(doc)

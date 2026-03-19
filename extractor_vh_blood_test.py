@@ -4,7 +4,7 @@ import fitz  # PyMuPDF
 import logging
 import re
 
-from utils.normalization import normalize_date, normalize_sex
+from utils.base_extractor import get_report_metadata
 
 # Definir umbrales de tolerancia (EPSILON_Y = 4.0, etc.)
 EPSILON_Y = 4.0
@@ -16,12 +16,6 @@ FLAG_RE = re.compile(r"[↑↓*]")
 RESIDUAL_DOT_RE = re.compile(r"^\.+$")
 WORD_RE = re.compile(r"[A-Za-zÀ-ÿ]+")
 LOWERCASE_CONNECTORS = {"i", "y", "e", "de", "del", "la", "el", "d"}
-NHC_RE = re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)")
-BIRTH_DATE_RE = re.compile(r"Naixement\s*:\s*(\d{2}/\d{2}/\d{4})")
-SEX_RE = re.compile(r"Sexe\s*:\s*([A-Za-z])")
-
-REQUEST_NUMBER_RE = re.compile(r"Petició\s*:\s*([0-9]+)")
-REPORT_DATE_RE = re.compile(r"Recepció\s*:\s*(\d{1,2}/\d{1,2}/\d{2})")
 
 
 def is_heading_upper_like(text: str) -> bool:
@@ -285,34 +279,6 @@ def extract_measurement_hierarchy(filepath) -> dict:
         document.close()
 
 
-def _extract_report_metadata(doc) -> dict:
-    page_text = doc[0].get_text("text") if len(doc) else ""
-    # Patient info
-    nhc_match = NHC_RE.search(page_text)
-    birth_date_match = BIRTH_DATE_RE.search(page_text)
-    sex_match = SEX_RE.search(page_text)
-
-    patient_info = {}
-    if nhc_match:
-        patient_info["nhc"] = nhc_match.group(1).strip()
-    if birth_date_match:
-        patient_info["birth_date"] = normalize_date(birth_date_match.group(1))
-    if sex_match:
-        patient_info["sex"] = normalize_sex(sex_match.group(1).strip())
-
-    # Report info
-    request_match = REQUEST_NUMBER_RE.search(page_text)
-    report_date_match = REPORT_DATE_RE.search(page_text)
-
-    report_info = {"report_type": "blood_test"}
-    if request_match:
-        report_info["lab_request_number"] = request_match.group(1).strip()
-    if report_date_match:
-        report_info["report_date"] = normalize_date(report_date_match.group(1))
-
-    return patient_info, report_info
-
-
 def _flatten_hierarchy(extracted_hierarchy: dict) -> list:
     measurements = []
     for section, subsections in extracted_hierarchy.items():
@@ -332,7 +298,7 @@ def _flatten_hierarchy(extracted_hierarchy: dict) -> list:
     return measurements
 
 
-def process_pdf(filepath, file_hash):
+def process_pdf(filepath, file_hash, source_file_type=None):
     """
     Adaptador para el pipeline ETL: convierte la salida jerárquica del extractor
     al formato esperado por loader.save_to_db().
@@ -348,7 +314,11 @@ def process_pdf(filepath, file_hash):
         # Reabrir solo para metadatos ligeros de cabecera.
         doc = fitz.open(filepath)
         try:
-            patient_info, report_info = _extract_report_metadata(doc)
+            page_text = doc[0].get_text("text") if len(doc) else ""
+            patient_info, report_info = get_report_metadata(
+                page_text,
+                source_file_type or "vh_blood_test",
+            )
         finally:
             doc.close()
 
