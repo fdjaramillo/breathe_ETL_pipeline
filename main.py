@@ -542,10 +542,10 @@ def main():
             processed, skipped, errors = process_files(
                 manual_blood_test_dir,
                 db_path,
-                extract_func=extractor_manual.process_manual_csv,
+                extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_blood_test_dir.name}",
                 nhc_mapping=None,
-                extension="csv",
+                extension="xlsx",
             )
             total_processed += processed
             total_skipped += skipped
@@ -556,10 +556,10 @@ def main():
             processed, skipped, errors = process_files(
                 manual_spirometry_dir,
                 db_path,
-                extract_func=extractor_manual.process_manual_csv,
+                extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_spirometry_dir.name}",
                 nhc_mapping=None,
-                extension="csv",
+                extension="xlsx",
             )
             total_processed += processed
             total_skipped += skipped
