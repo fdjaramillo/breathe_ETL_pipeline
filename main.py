@@ -166,7 +166,7 @@ def process_files(
         processed_hashes = get_processed_hashes(db_path)
 
     for index, filepath in enumerate(target_files, start=1):
-        logging.info(f"[{index}/{total_files}] Procesando: {filepath}")
+        logging.info(f"[{index}/{total_files}] Procesando: {filepath.name}")
 
         try:
             # A. Hash + idempotencia
@@ -207,7 +207,10 @@ def process_files(
                         f"  → [UNKNOWN] Formato no soportado para: {filepath.name}"
                     )
                     audit_logger.log_to_master_csv(
-                        filepath, "UNKNOWN", reason="Formato no soportado"
+                        filepath,
+                        "UNKNOWN",
+                        reason="Formato no soportado",
+                        source_filetype=source_file_type,
                     )
                     error_count += 1
                     continue
@@ -245,6 +248,7 @@ def process_files(
                     filepath,
                     "ERROR",
                     reason="El extractor devolvió datos vacíos",
+                    source_filetype=source_file_type,
                 )
                 error_count += 1
                 continue
@@ -271,7 +275,10 @@ def process_files(
                 loader.mark_file_processed(current_hash, filepath.name, db_path)
                 processed_hashes.add(current_hash)
                 audit_logger.log_to_master_csv(
-                    filepath, "PROCESSED", patient_id=patient_id
+                    filepath,
+                    "PROCESSED",
+                    patient_id=patient_id,
+                    source_filetype=source_file_type,
                 )
                 logging.info("  → [OK] Procesamiento completado con éxito.")
                 processed_count += 1
@@ -281,6 +288,7 @@ def process_files(
                     "ERROR",
                     patient_id=patient_id,
                     reason="Error en inserción DB",
+                    source_filetype=source_file_type,
                 )
                 logging.error(
                     "  → [FALLO] Error durante la inserción de uno o más bloques en DB."
@@ -293,7 +301,10 @@ def process_files(
                 filepath.name,
             )
             audit_logger.log_to_master_csv(
-                filepath, "ERROR", reason=f"Excepción: {error}"
+                filepath,
+                "ERROR",
+                reason=f"Excepción: {error}",
+                source_filetype=source_file_type,
             )
             error_count += 1
 

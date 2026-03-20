@@ -30,6 +30,7 @@ _FIELDNAMES = [
     "Patient_ID",
     "Status",
     "Reason",
+    "Source_FileType",
 ]
 
 
@@ -41,7 +42,9 @@ def configure(audit_csv_path=None):
         _AUDIT_CSV = Path(audit_csv_path)
 
 
-def log_to_master_csv(filepath, status, patient_id=None, reason=None):
+def log_to_master_csv(
+    filepath, status, patient_id=None, reason=None, source_filetype=None
+):
     """
     Appends a single audit row to the configured audit CSV.
 
@@ -68,6 +71,7 @@ def log_to_master_csv(filepath, status, patient_id=None, reason=None):
                 {
                     "Original_Path": str(filepath.resolve()),
                     "Ingestion_Folder": filepath.parent.name,
+                    "Source_FileType": source_filetype,
                     "Timestamp": datetime.now().isoformat(timespec="seconds"),
                     "Patient_ID": patient_id,
                     "Status": status,
