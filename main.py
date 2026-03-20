@@ -185,6 +185,20 @@ def process_files(
             selected_extract_func = extract_func
             if selected_extract_func is None:
                 file_type = dispatcher.identify_file_type(filepath)
+                # skip si el tipo identificado es UNKNOWN o SPIROMETRY_CAP (requiere extractor específico)
+                if file_type in ["UNKNOWN", "SPIROMETRY_CAP"]:
+                    logging.warning(
+                        f"  → [SKIP] Tipo no procesable para: {filepath.name} (Identificado como: {file_type})"
+                    )
+                    audit_logger.log_to_master_csv(
+                        filepath,
+                        "SKIPPED",
+                        reason=f"Tipo no procesable: {file_type}",
+                        source_filetype=file_type,
+                    )
+                    skipped_count += 1
+                    continue
+
                 source_file_type = file_type
                 selected_extract_func = dispatcher.FILE_TYPE_TO_EXTRACTOR.get(file_type)
 
@@ -203,9 +217,13 @@ def process_files(
                 )
 
                 # C. Extracción para blood_test o spirometry
-                data_result = selected_extract_func(
-                    filepath, current_hash, source_file_type=source_file_type
-                )
+                # SPIROMETRY_CLINIC no esta preparado para recibir source_file_type
+                if source_file_type != "SPIROMETRY_CLINIC":
+                    data_result = selected_extract_func(
+                        filepath, current_hash, source_file_type=source_file_type
+                    )
+                else:
+                    data_result = selected_extract_func(filepath, current_hash)
 
             if not data_result:
                 # C. Extracción general
