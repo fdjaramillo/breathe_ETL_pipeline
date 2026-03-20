@@ -217,12 +217,15 @@ def process_manual_excel(excel_filepath, file_hash):
     for subject_id, measurements in blocks.items():
         results.append(
             {
-                "file_info": {"filename": excel_filepath.name, "file_hash": file_hash},
+                "file_info": {
+                    "filename": excel_filepath.name,
+                    "file_hash": file_hash,
+                    "source_file_type": metadata.get(subject_id, {}).get("source"),
+                },
                 "subject_id": subject_id,
                 "report": {
                     "report_type": report_type,
                     "report_date": metadata.get(subject_id, {}).get("date"),
-                    "source_file_type": metadata.get(subject_id, {}).get("source"),
                 },
                 "measurements": measurements,
             }

@@ -218,7 +218,8 @@ def process_files(
             if isinstance(data_result, dict):
                 if "file_info" not in data_result:
                     data_result["file_info"] = {}
-                data_result["file_info"]["source_file_type"] = source_file_type
+                if not data_result["file_info"].get("source_file_type"):
+                    data_result["file_info"]["source_file_type"] = source_file_type
 
             if not data_result:
                 logging.error("  → [ERROR] El extractor devolvió datos vacíos.")
