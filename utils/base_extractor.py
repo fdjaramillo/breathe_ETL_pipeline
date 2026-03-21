@@ -8,7 +8,7 @@ _METADATA_PATTERNS = {
         "nhc": re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)"),
         # name
         "birth_date": re.compile(r"Fecha nac\./Data naix\.\s*:\s*(\d{2}/\d{2}/\d{4})"),
-        "sex": re.compile(r"Sexo/Sexe\s*:\s*([A-Za-z])"),
+        "sex": re.compile(r"Sexo/Sexe\s*:\s*([A-Za-z]+)"),
         "lab_request_number": re.compile(r"N\. Sol·licitud Lab\.\s*:\s*([0-9]+)"),
         "report_date": re.compile(r"Data recepció mostra\s*:\s*(\d{2}/\d{2}/\d{4})"),
     },
@@ -16,7 +16,7 @@ _METADATA_PATTERNS = {
         "nhc": re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)"),
         "name": re.compile(r"Pacient:\s*(.+?)\s{2,}Petició:"),
         "birth_date": re.compile(r"Naixement\s*:\s*(\d{2}/\d{2}/\d{4})"),
-        "sex": re.compile(r"Sexe\s*:\s*([A-Za-z])"),
+        "sex": re.compile(r"Sexe\s*:\s*([A-Za-z]+)"),
         "lab_request_number": re.compile(r"Petició\s*:\s*([0-9]+)"),
         "report_date": re.compile(r"Recepció\s*:\s*(\d{1,2}/\d{1,2}/\d{2})"),
     },
@@ -57,7 +57,7 @@ def get_report_metadata(page_text: str, source_type: str):
 
     nhc_match = patterns["nhc"].search(page_text)
     if nhc_match:
-        patient_info["nhc"] = nhc_match.group(1).strip()
+        patient_info["nhc"] = nhc_match.group(1).strip().lstrip("0")
 
     name_match = patterns["name"].search(page_text)
     if name_match:
