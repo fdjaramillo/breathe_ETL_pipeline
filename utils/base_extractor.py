@@ -6,6 +6,7 @@ from utils.normalization import normalize_date, normalize_sex
 _METADATA_PATTERNS = {
     "BLOOD_TEST_CLINIC": {
         "nhc": re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)"),
+        # name
         "birth_date": re.compile(r"Fecha nac\./Data naix\.\s*:\s*(\d{2}/\d{2}/\d{4})"),
         "sex": re.compile(r"Sexo/Sexe\s*:\s*([A-Za-z])"),
         "lab_request_number": re.compile(r"N\. Sol·licitud Lab\.\s*:\s*([0-9]+)"),
@@ -13,6 +14,7 @@ _METADATA_PATTERNS = {
     },
     "BLOOD_TEST_VH": {
         "nhc": re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)"),
+        "name": re.compile(r"Pacient:\s*(.+?)\s{2,}Petició:"),
         "birth_date": re.compile(r"Naixement\s*:\s*(\d{2}/\d{2}/\d{4})"),
         "sex": re.compile(r"Sexe\s*:\s*([A-Za-z])"),
         "lab_request_number": re.compile(r"Petició\s*:\s*([0-9]+)"),
@@ -57,6 +59,10 @@ def get_report_metadata(page_text: str, source_type: str):
     if nhc_match:
         patient_info["nhc"] = nhc_match.group(1).strip()
 
+    name_match = patterns["name"].search(page_text)
+    if name_match:
+        patient_info["name"] = name_match.group(1).strip()
+
     birth_date_match = patterns["birth_date"].search(page_text)
     if birth_date_match:
         patient_info["birth_date"] = normalize_date(birth_date_match.group(1))
@@ -64,6 +70,14 @@ def get_report_metadata(page_text: str, source_type: str):
     sex_match = patterns["sex"].search(page_text)
     if sex_match:
         patient_info["sex"] = normalize_sex(sex_match.group(1).strip())
+
+    height_match = patterns["height"].search(page_text)
+    if height_match:
+        patient_info["height_cm"] = float(height_match.group(1))
+
+    weight_match = patterns["weight"].search(page_text)
+    if weight_match:
+        patient_info["weight_kg"] = float(weight_match.group(1))
 
     report_info = {"report_type": "blood_test"}
 
