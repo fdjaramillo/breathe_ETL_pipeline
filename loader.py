@@ -136,10 +136,6 @@ def save_to_db(data_object, db_path, nhc_mapping=None):
         # Activar Foreign Keys explícitamente
         cursor.execute("PRAGMA foreign_keys = ON;")
 
-        # INICIO DE TRANSACCIÓN
-        # Si algo falla dentro de este bloque, se hace rollback automático al final
-        cursor.execute("BEGIN TRANSACTION;")
-
         # --- Resolución de identidad ---
         patient_data = data_object.get("patient", {}) or {}
         nhc = patient_data.get("nhc")
