@@ -18,6 +18,26 @@ _METADATA_PATTERNS = {
         "lab_request_number": re.compile(r"Petició\s*:\s*([0-9]+)"),
         "report_date": re.compile(r"Recepció\s*:\s*(\d{1,2}/\d{1,2}/\d{2})"),
     },
+    "SPIROMETRY_CLINIC": {
+        "nhc": re.compile(r"NHC\s*:?\s*(\w+).*?Edat"),
+        # name
+        "edad": re.compile(r"Edat\s*\(anys\):\s*(\d+)"),
+        "sex": re.compile(r"Sexe\s*:\s*([A-Za-z]+)"),
+        "height": re.compile(r"Alçada\s*\(cm\):\s*(\d+(?:\.\d+)?)"),
+        "weight": re.compile(r"Pes\s*\(Kg\):\s*(\d+(?:\.\d+)?)"),
+        "report_date": re.compile(
+            r"Data exploraci[oó]\s*:?\s*([0-9]{2}/[0-9]{2}/[0-9]{4})"
+        ),
+    },
+    "SPIROMETRY_CAP": {
+        "nhc": re.compile(r"NHC\s*:\s*([A-Za-z0-9]+)"),
+        "name": re.compile(r"Nombre:\s*(.+)"),
+        "edad": re.compile(r"Edad\s*\(a\):\s*(\d+)"),
+        "sex": re.compile(r"Sexo\s*:\s*([A-Za-z]+)"),
+        "height": re.compile(r"Talla\(cm\):\s*(\d+(?:\.\d+)?)"),
+        "weight": re.compile(r"Peso\(Kg\):\s*(\d+(?:\.\d+)?)"),
+        "report_date": re.compile(r"Fecha:\s*([0-9]{2}-[0-9]{2}-[0-9]{4})"),
+    },
 }
 
 
