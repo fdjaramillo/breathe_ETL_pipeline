@@ -186,7 +186,7 @@ def process_files(
     skipped_count = 0
     error_count = 0
     if processed_hashes is None:
-        processed_hashes = get_processed_hashes(db_path)
+        processed_hashes = set()
 
     for index, filepath in enumerate(target_files, start=1):
         logging.info(f"[{index}/{total_files}] Procesando: {filepath.name}")
@@ -334,7 +334,7 @@ def process_files(
     return processed_count, skipped_count, error_count
 
 
-def process_files_master(master_csvs, db_path):
+def process_files_master(master_csvs, db_path, processed_hashes):
     """
     Procesa archivos maestros CSV para conciliación de identidades.
 
@@ -362,8 +362,6 @@ def process_files_master(master_csvs, db_path):
     processed_count = 0
     skipped_count = 0
     error_count = 0
-    processed_hashes = get_processed_hashes(db_path)
-
     for index, filepath in enumerate(csv_files, start=1):
         logging.info(f"[{index}/{len(csv_files)}] Procesando: {filepath.name}")
 
@@ -494,6 +492,7 @@ def main():
     total_processed = 0
     total_skipped = 0
     total_errors = 0
+    processed_hashes = get_processed_hashes(db_path)
 
     # 8. Cargar mapeo NHC (SOLO si la fase PDF unificada está activa)
     nhc_to_id = {}
@@ -520,6 +519,7 @@ def main():
         processed, skipped, errors = process_files_master(
             config.get("master_csvs"),
             db_path,
+            processed_hashes,
         )
         total_processed += processed
         total_skipped += skipped
@@ -537,7 +537,6 @@ def main():
 
         raw_ingestion_dir = config.get("raw_ingestion_dir")
         if raw_ingestion_dir:
-            processed_hashes = get_processed_hashes(db_path)
             processed, skipped, errors = process_files(
                 raw_ingestion_dir,
                 db_path,
@@ -572,6 +571,7 @@ def main():
                 extract_func=extractor_macro.process_csv,
                 source_file_type="macro_csv",
                 extension="csv",
+                processed_hashes=processed_hashes,
             )
             total_processed += processed
             total_skipped += skipped
@@ -599,6 +599,7 @@ def main():
                 extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_blood_test_dir.name}",
                 extension="xlsx",
+                processed_hashes=processed_hashes,
             )
             total_processed += processed
             total_skipped += skipped
@@ -612,6 +613,7 @@ def main():
                 extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_spirometry_dir.name}",
                 extension="xlsx",
+                processed_hashes=processed_hashes,
             )
             total_processed += processed
             total_skipped += skipped
@@ -637,6 +639,7 @@ def main():
                 extract_func=extractor_questionnaires.process_excel,
                 source_file_type="questionnaires_excel",
                 extension="xlsx",
+                processed_hashes=processed_hashes,
             )
             total_processed += processed
             total_skipped += skipped
