@@ -15,6 +15,7 @@ import extractor_master
 import extractor_questionnaires
 import loader
 from utils.config import load_config
+from utils.normalization import find_match, normalize_clinical_name
 
 
 def get_file_hash(filepath):
@@ -31,44 +32,57 @@ def get_file_hash(filepath):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def load_nhc_mapping(csv_path):
+def load_mapping_data(csv_path):
     """
-    Lee el archivo CSV de mapeo NHC -> ID y retorna un diccionario.
-    RETORNA NONE si el archivo no existe (sin abortar).
+    Lee el archivo CSV de mapeo (nombre, nhc, id).
 
     Args:
         csv_path: Ruta del archivo CSV
 
     Returns:
-        Diccionario {nhc: subject_id} o None si falla
+        Tupla (nhc_to_id, name_to_id)
     """
     csv_path = Path(csv_path)
 
     if not csv_path.exists():
         logging.warning(f"Archivo de mapeo no encontrado: {csv_path}")
-        return None
+        return {}, {}
 
-    nhc_mapping = {}
+    nhc_to_id = {}
+    name_to_id = {}
     try:
         with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if row and "nhc" in row and "id" in row:
-                    nhc = row["nhc"].strip()
-                    subject_id = row["id"].strip()
-                    nhc_mapping[nhc] = subject_id
+                if not row:
+                    continue
+
+                subject_id = (row.get("id") or "").strip()
+                if not subject_id:
+                    continue
+
+                nhc = (row.get("nhc") or "").strip()
+                if nhc:
+                    nhc_to_id[nhc] = subject_id
+
+                cleaned_name = normalize_clinical_name(row.get("nombre"))
+                if cleaned_name:
+                    name_to_id[cleaned_name] = subject_id
 
         logging.info(
-            f"Cargado mapeo NHC -> ID: {len(nhc_mapping)} registros desde {csv_path}"
+            "Cargado mapeo de anonimización: %s NHC y %s nombres desde %s",
+            len(nhc_to_id),
+            len(name_to_id),
+            csv_path,
         )
-        return nhc_mapping
+        return nhc_to_id, name_to_id
 
     except (OSError, csv.Error) as error:
         logging.error("Error leyendo archivo de mapeo %s: %s", csv_path, error)
-        return None
+        return {}, {}
     except Exception:
         logging.exception("Error inesperado leyendo archivo de mapeo %s", csv_path)
-        return None
+        return {}, {}
 
 
 def get_processed_hashes(db_path):
@@ -85,7 +99,7 @@ def get_processed_hashes(db_path):
         return set()
 
 
-def _resolve_patient_id(block, nhc_mapping):
+def _resolve_patient_id(block, nhc_to_id, name_to_id):
     """
     Best-effort extraction of a patient identifier from a data block.
     Used only for audit CSV enrichment — never blocks processing.
@@ -95,10 +109,17 @@ def _resolve_patient_id(block, nhc_mapping):
         return str(subject_id)
 
     nhc = block.get("patient", {}).get("nhc")
+    name = block.get("patient", {}).get("name")
+
     if nhc:
-        if nhc_mapping:
-            return nhc_mapping.get(nhc, nhc)
-        return nhc
+        resolved = nhc_to_id.get(nhc) if nhc_to_id else None
+        if resolved:
+            return resolved
+
+    if name and name_to_id:
+        matched_id, _ = find_match(name, name_to_id)
+        if matched_id:
+            return matched_id
 
     return None
 
@@ -118,7 +139,8 @@ def process_files(
     db_path,
     extract_func=None,
     source_file_type=None,
-    nhc_mapping=None,
+    nhc_to_id=None,
+    name_to_id=None,
     extension="pdf",
     processed_hashes=None,
 ):
@@ -133,7 +155,8 @@ def process_files(
         db_path: SQLite database path.
         extract_func: Optional extraction callable.
         source_file_type: Optional file type for dynamic dispatcher selection.
-        nhc_mapping: Optional {nhc: subject_id} dict for PHI de-identification.
+        nhc_to_id: Optional {nhc: subject_id} dict for PHI de-identification.
+        name_to_id: Optional {normalized_name: subject_id} dict for PHI de-identification.
         extension: File extension to search for.
         processed_hashes: Optional set with preloaded processed hashes.
 
@@ -265,11 +288,11 @@ def process_files(
             patient_id = None
 
             for block in data_blocks:
-                success = loader.save_to_db(block, db_path, nhc_mapping)
+                success = loader.save_to_db(block, db_path, nhc_to_id)
                 if not success:
                     all_blocks_success = False
                 if patient_id is None:
-                    patient_id = _resolve_patient_id(block, nhc_mapping)
+                    patient_id = _resolve_patient_id(block, nhc_to_id, name_to_id)
 
             if all_blocks_success:
                 loader.mark_file_processed(current_hash, filepath.name, db_path)
@@ -473,13 +496,14 @@ def main():
     total_errors = 0
 
     # 8. Cargar mapeo NHC (SOLO si la fase PDF unificada está activa)
-    nhc_mapping = None
+    nhc_to_id = {}
+    name_to_id = {}
     if run_phase_1:
         csv_mapping_path = config.get("csv_mapping_path")
         if csv_mapping_path:
             logging.info("Cargando mapeo de anonimización...")
-            nhc_mapping = load_nhc_mapping(csv_mapping_path)
-            if nhc_mapping is None:
+            nhc_to_id, name_to_id = load_mapping_data(csv_mapping_path)
+            if not nhc_to_id and not name_to_id:
                 logging.warning(
                     "Mapeo NHC no disponible. La fase PDF (triaje e ingesta) puede requerirlo."
                 )
@@ -519,7 +543,8 @@ def main():
                 db_path,
                 extract_func=None,
                 source_file_type=None,
-                nhc_mapping=nhc_mapping,
+                nhc_to_id=nhc_to_id,
+                name_to_id=name_to_id,
                 extension="pdf",
                 processed_hashes=processed_hashes,
             )
@@ -546,7 +571,6 @@ def main():
                 db_path,
                 extract_func=extractor_macro.process_csv,
                 source_file_type="macro_csv",
-                nhc_mapping=None,
                 extension="csv",
             )
             total_processed += processed
@@ -574,7 +598,6 @@ def main():
                 db_path,
                 extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_blood_test_dir.name}",
-                nhc_mapping=None,
                 extension="xlsx",
             )
             total_processed += processed
@@ -588,7 +611,6 @@ def main():
                 db_path,
                 extract_func=extractor_manual.process_manual_excel,
                 source_file_type=f"manual_entry_{manual_spirometry_dir.name}",
-                nhc_mapping=None,
                 extension="xlsx",
             )
             total_processed += processed
@@ -614,7 +636,6 @@ def main():
                 db_path,
                 extract_func=extractor_questionnaires.process_excel,
                 source_file_type="questionnaires_excel",
-                nhc_mapping=None,
                 extension="xlsx",
             )
             total_processed += processed
